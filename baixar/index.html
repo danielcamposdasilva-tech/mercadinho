@@ -70,13 +70,13 @@
   .tecla svg{width:16px;height:16px}
   .aviso{background:var(--verde-claro);border-radius:14px;padding:12px 14px;font-size:15px;margin-top:4px}
   .aviso b{font-weight:800}
-  .previa{display:flex;gap:16px;align-items:center}
-  .previa img{width:42%;max-width:190px;border-radius:16px;border:3px solid var(--borda);flex:none}
-  .previa ul{margin:0;padding-left:18px}
+  .previa{display:flex;flex-direction:column;align-items:center;gap:16px}
+  .previa img{display:block;width:100%;max-width:280px;height:auto;aspect-ratio:780/1688;border-radius:22px;border:4px solid var(--borda);box-shadow:0 8px 24px rgba(0,0,0,.12)}
+  .previa ul{margin:0;padding-left:20px;align-self:stretch}
   .previa li{margin-bottom:6px}
   .rodape{text-align:center;font-size:14px;color:var(--suave);margin-top:28px}
   .rodape .moeda{display:inline-grid;place-items:center;width:22px;height:22px;border-radius:50%;background:var(--ouro);color:#6a4500;font-weight:800;font-size:13px;vertical-align:-4px;border:2px solid var(--ouro-escuro)}
-  @media (max-width:360px){h1{font-size:29px}.previa{flex-direction:column}.previa img{width:70%}}
+  @media (max-width:360px){h1{font-size:29px}}
 </style>
 </head>
 <body>
@@ -146,7 +146,7 @@
   <section class="cartao" aria-labelledby="t-jogo">
     <h2 id="t-jogo">Como é o jogo</h2>
     <div class="previa">
-      <img src="tela-jogo.jpg" alt="Tela do jogo: o mercadinho visto de cima, com clientes nas prateleiras, o caixa e o estacionamento" width="390" height="844" loading="lazy">
+      <img src="tela-jogo.jpg" alt="Tela do jogo: o mercadinho visto de cima, com clientes nas prateleiras, o caixa e o estacionamento" width="780" height="1688" loading="lazy">
       <ul>
         <li>Abra seções novas, contrate funcionários e organize o caixa.</li>
         <li>Ganhe <b>Mumbucas</b> (M) com as vendas e invista no mercado.</li>
