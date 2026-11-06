@@ -1,5 +1,5 @@
 // Guarda o jogo no aparelho para abrir mesmo sem internet. Ao publicar versão nova, troque a VERSAO.
-const VERSAO = "mercadinho-1.2-a";
+const VERSAO = "mercadinho-1.2-b";
 const ARQUIVOS = ["./", "index.html", "manifest.webmanifest", "apple-touch-icon.png", "icone-192.png", "icone-512.png"];
 self.addEventListener("install", e => { e.waitUntil(caches.open(VERSAO).then(c => c.addAll(ARQUIVOS))); self.skipWaiting(); });
 self.addEventListener("activate", e => { e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== VERSAO).map(k => caches.delete(k)))).then(() => self.clients.claim())); });
