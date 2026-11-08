@@ -399,7 +399,7 @@
     <div class="hud-row">
       <button class="chip lvl" id="lvlChip"><span class="badge-ic" aria-hidden="true"><svg class="i fill"><use href="#i-star"/></svg></span><span class="sr-only">Porte da loja: </span><b id="lvlNum">Nv 1</b></button>
       <div class="chip money" id="moneyChip"><span class="badge-ic" aria-hidden="true">M</span><span class="sr-only">Dinheiro: Mumbuca </span><b id="money">0</b></div>
-      <div class="chip rep" id="repChip"><svg class="i fill" aria-hidden="true"><use href="#i-star"/></svg><span class="sr-only">Reputação: </span><b id="repNum">3,0</b><span class="sr-only"> estrelas</span></div>
+      <button class="chip rep" id="repChip" aria-haspopup="dialog"><svg class="i fill" aria-hidden="true"><use href="#i-star"/></svg><span class="sr-only">Reputação: </span><b id="repNum">3,0</b><span class="sr-only"> estrelas. Toque para ver o motivo e como melhorar</span></button>
       <div class="spacer"></div>
       <button class="round" id="btnSettings" aria-label="Configurações"><svg class="i"><use href="#i-gear"/></svg></button>
     </div>
@@ -478,6 +478,7 @@ const DAY_LEN = 90, RUSH = [0.45, 0.65], RUSH_MULT = 1.8;
 const SHELF_PATIENCE = 7, QUEUE_PATIENCE = 15, GEAR_PATIENCE = 6, BASKET_CAP = 3;
 const truckEvery = () => (S.park && S.park.lots.logi ? 6 : 8);
 const MAX_STAFF = 3, MAX_COLLECTORS = 3, DEBT_INTEREST = 0.05;
+const MAX_PRATELEIRA = 7;          // 1.6: nível máximo da prateleira (índice 7 = nível 8, 25 itens); saves acima disso ficam como estão
 
 const SECTORS = [
   { id: "mercearia",    name: "Mercearia",    ic: "🥫", color: "#d9822b", price: 2,   base: 8,    open: 0 },
@@ -1085,9 +1086,11 @@ function goToShelf(c) {
 function laneQueue(l) { if (DIV) return filaOrdenada(l); return customers.filter(c => c.lane === l && (c.state === "toLane" || c.state === "queue")).sort((a, b) => a.qAt - b.qAt); }
 function pickLane() { let best = 0, n = Infinity; for (let l = 0; l < nCaixas(); l++) { const k = laneQueue(l).length; if (k < n) { n = k; best = l; } } return best; }
 function float(x, y, text, color) { floats.push({ x, y, text, t: 0, color }); }
-function changeRep(d) { S.rep = Math.max(0, Math.min(5, S.rep + d)); }
+// causa (1.6): soma por motivo, no dia, para explicar a reputação ao tocar nas estrelas (12i-reputacao)
+function changeRep(d, causa) { S.rep = Math.max(0, Math.min(5, S.rep + d)); if (causa && S.today) { const r = S.today.repCausas || (S.today.repCausas = {}), q = r[causa] || (r[causa] = { v: 0, n: 0 }); q.v += d; q.n++; } }
+const causaIrritado = why => /cesta/.test(why) ? "cesta" : /fila/.test(why) ? "fila" : /achei/.test(why) ? "nada" : "irritado";
 function leaveAngry(c, why) {
-  S.today.lost++; changeRep(-0.12); float(c.x, c.y - 18, why, "#c9513a");
+  S.today.lost++; changeRep(-0.12, causaIrritado(why)); float(c.x, c.y - 18, why, "#c9513a");
   const pm = window.__perdas || (window.__perdas = {}), k = why + (c.perfil && c.perfil !== "padrao" ? " [" + c.perfil + "]" : "") + (DIV && usaPrio(c) ? " prio" : ""); pm[k] = (pm[k] || 0) + 1;   // diagnóstico (não é salvo)
   c.path = caminhoIrritado(c); c.state = "angry"; c.wasAngry = true; c.lane = null;
 }
@@ -1097,7 +1100,7 @@ function nextStep(c) {
   if (c.plan.some(p => p.got > 0)) {
     c.lane = DIV ? escolherCaixa(c) : pickLane(); c.qAt = qSeq++; c.state = "toLane";
     c.path = caminhoCaixa(c, c.lane);
-  } else { changeRep(0.04); leaveAngry(c, "😠 não achei nada"); }
+  } else { changeRep(0.04, "nada"); leaveAngry(c, "😠 não achei nada"); }
 }
 </script>
 <script>
@@ -1297,7 +1300,7 @@ function passoAjuda(w, sp, dt) {
   const faltaCesta = station.b + station.c === 0 && piles.some(p => p.b + p.c > 0);   // volta para recolher cestas
   if (terminou || faltaCesta || w.tAj > AJUDA_MAX || (w.state === "acompanha" && w.tAc > AJUDA_ACOMPANHA)) {
     if (c && c.ajuda && (c.ajuda.estado === "indo" || c.ajuda.estado === "acompanhado")) {
-      if (c.ajuda.estado === "acompanhado") { c.ajuda.estado = "concluida"; acess().hoje.ajudas++; acess().total.ajudas++; changeRep(0.02); }
+      if (c.ajuda.estado === "acompanhado") { c.ajuda.estado = "concluida"; acess().hoje.ajudas++; acess().total.ajudas++; changeRep(0.02, "ajuda"); }
       else { c.ajuda.estado = "sem"; acess().hoje.semAjuda++; acess().total.semAjuda++; }
     }
     voltarDaAjuda(w); return;
@@ -1443,8 +1446,8 @@ function update(dt) {
     truck.timer -= dt;
     if (truck.timer <= 0) {
       const order = planOrder(); let paid = 0, n = 0;
-      const fa = fornAtivo();                // capítulo 3: reposição de emergência, mais cara, com custo médio por setor
-      SECTORS.forEach(d => { const k = order[d.id] || 0; if (k) { if (fa) entrouEstoque(d, k, boxCost(d, S.sec[d.id].priceLvl) * FORN_CFG.fatorAuto); S.sec[d.id].wh += k; paid += fa ? k * boxCost(d, S.sec[d.id].priceLvl) * FORN_CFG.fatorAuto : k * boxCost(d, S.sec[d.id].priceLvl); n += k; } });
+      const fa = fornAtivo(), fat = fa ? fatorCaminhao() : 1;   // capítulo 3: reposição de emergência, mais cara; com fornecedores, custo médio por setor
+      SECTORS.forEach(d => { const k = order[d.id] || 0; if (k) { if (fa) entrouEstoque(d, k, boxCost(d, S.sec[d.id].priceLvl) * fat); S.sec[d.id].wh += k; paid += fa ? k * boxCost(d, S.sec[d.id].priceLvl) * fat : k * boxCost(d, S.sec[d.id].priceLvl); n += k; } });
       if (n) { S.money -= paid; S.today.goods += paid; float(P.truckStop.x, 52, `+${n} caixas  -M ${fmt(paid)}`, "#6b4f2f"); }
       truck.state = "leaving";
     }
@@ -1509,7 +1512,7 @@ function update(dt) {
         if (c.grab <= 0) { st.shelf--; it.got++; c.grab = c.ajuda && c.ajuda.estado === "acompanhado" ? 0.25 : 0.35; c.wait = Math.max(0, c.wait - 1); }
       } else if (it.got < it.want) c.wait += dt;
       if (it.got >= it.want) nextStep(c);
-      else if (c.wait > SHELF_PATIENCE + (GANCHOS.paciencia ? GANCHOS.paciencia(it.sec) : 0)) { if (it.got === 0) { changeRep(-0.04); float(c.x, c.y - 18, "😕", "#c9513a"); } nextStep(c); }
+      else if (c.wait > SHELF_PATIENCE + (GANCHOS.paciencia ? GANCHOS.paciencia(it.sec) : 0)) { if (it.got === 0) { changeRep(-0.04, "gondola"); float(c.x, c.y - 18, "😕", "#c9513a"); } nextStep(c); }
     } else if (c.state === "toLane" || c.state === "queue") {
       if (c.lane >= LANES.length) c.lane = DIV ? escolherCaixa(c) : pickLane();
       if (lanes[c.lane].servingId !== c.id) c.qWait += dt;
@@ -1542,7 +1545,7 @@ function update(dt) {
         S.money += v; S.today.sales += v; S.today.served++; S.earned += v; S.served++;
         taskProgress("serve", 1); taskProgress("sales", v);
         head.plan.forEach(p => { if (p.got) { taskProgress("sell", p.got, p.sec); vendaSetor(p.sec, p.got); } });
-        changeRep(head.qWait < 5 ? 0.05 : 0.02); if (head.qWait < 5) heart(head.x, head.y - 24);
+        changeRep(head.qWait < 5 ? 0.05 : 0.02, head.qWait < 5 ? "rapido" : "atendido"); if (head.qWait < 5) heart(head.x, head.y - 24);
         if (GANCHOS.atendido) GANCHOS.atendido(head, v);
         float(LANES[l].serve.x, LANES[l].serve.y - 22, `+M ${fmt(v)}`, "#2e7a57"); coinBurst(LANES[l].serve.x, LANES[l].serve.y - 10, Math.min(5, 1 + Math.round(Math.log2(1 + v))));
         returnGear(head, piles[l]); if (piles[l].b + piles[l].c >= 3) toastOnce("pile", "Cestas acumulando no caixa! Toque nelas para devolver ou contrate carrinheiros.");
@@ -1583,12 +1586,13 @@ function planOrder() {
   const open = openSectors(), order = { total: 0 }, fa = fornAtivo();
   if (fa && !fornEstado().auto) return order;           // capítulo 3: reposição automática desligada pelo jogador
   let room = whCap(S.whLvl) - whUsed() - (fa ? reservado() : 0), load = truckLoad(S.whLvl), cash = S.money;
-  const target = fa ? FORN_CFG.emergencia : Math.floor(whCap(S.whLvl) / Math.max(1, open.length));
+  const fc = fa && fornCompleto(), fat = fc ? FORN_CFG.fatorAuto : 1;
+  const target = fc ? FORN_CFG.emergencia : Math.floor(whCap(S.whLvl) / Math.max(1, open.length));
   let progress = true;
   while (load > 0 && room > 0 && progress) {
     progress = false;
     for (const d of open) {
-      const st = S.sec[d.id], have = st.wh + (order[d.id] || 0) - (GANCHOS.faltaEstoque ? GANCHOS.faltaEstoque(d.id) : 0), c = fa ? boxCost(d, st.priceLvl) * FORN_CFG.fatorAuto : boxCost(d, st.priceLvl);
+      const st = S.sec[d.id], have = st.wh + (order[d.id] || 0) - (GANCHOS.faltaEstoque ? GANCHOS.faltaEstoque(d.id) : 0), c = boxCost(d, st.priceLvl) * fat;
       if (have < target && load > 0 && room > 0 && cash >= c) { order[d.id] = (order[d.id] || 0) + 1; order.total++; load--; room--; cash -= c; progress = true; }
     }
   }
@@ -1728,7 +1732,7 @@ function passBy(c, lostWhy) {
   const y = pkY();
   c.state = "pass"; c.path = [{ x: c.x + 16, y: y.lanePass }, { x: WORLD.x1 + 60, y: y.lanePass }];
   if (lostWhy === "price") { S.today.park.lostPrice++; float(c.x + 10, c.y - 14, "Caro! 💸", "#c9513a"); }
-  if (lostWhy === "full") { S.today.park.lostFull++; changeRep(-0.02); avisoDesistiu(c); }
+  if (lostWhy === "full") { S.today.park.lostFull++; changeRep(-0.02, "estacionamento"); avisoDesistiu(c); }
 }
 // 1.4: só diz "lotado" quando não há vaga livre; com vagas sobrando, o gargalo é a fila da cancela
 const vagaLivre = () => STALLS.some(s => !s.car && !s.res);
@@ -1760,7 +1764,7 @@ function updateParking(dt) {
     if (!c) { inQ.splice(i, 1); continue; }
     if (c.wait > PK.carWait && !c.stall && gates.in.car !== c.id) {
       inQ.splice(i, 1);
-      if (i === 0 && c.y < y.laneIn - 2) { c.state = "pass"; c.path = [{ x: PK.EX, y: y.laneIn }, { x: WORLD.x1 + 60, y: y.laneIn }]; S.today.park.lostFull++; changeRep(-0.02); avisoDesistiu(c); }
+      if (i === 0 && c.y < y.laneIn - 2) { c.state = "pass"; c.path = [{ x: PK.EX, y: y.laneIn }, { x: WORLD.x1 + 60, y: y.laneIn }]; S.today.park.lostFull++; changeRep(-0.02, "estacionamento"); avisoDesistiu(c); }
       else passBy(c, "full");
     }
   }
@@ -2100,6 +2104,8 @@ function iniciarCarreira() {
   if (!S.fase) S.fase = novaFase();
   S.fase = Object.assign(novaFase(), S.fase);
   if (CFG.carregar) CFG.carregar();            // campos novos de cada capítulo (partidas antigas recebem valores padrão)
+  // 1.6: capítulos 4 e 5 ganharam os fornecedores; partida em andamento recebe o aviso uma vez
+  if (CFG.fornecedores && !S.forn) { S.forn = fornNovo(); if (!introFasePendente) S.avisoForn16 = true; }
 }
 
 // ---------- ganchos chamados pelo motor (neutros fora da carreira) ----------
@@ -2412,6 +2418,9 @@ function missaoCarreira() {
 // - Compra ruim tem conserto: perecíveis parados perdem 10% por dia, e dá para repassar excedente
 //   (metade do custo), cancelar pedido a caminho (multa de 20%) ou fazer promoção.
 // Fora do capítulo 3 nada daqui roda: fornAtivo() é falso e os ganchos não mexem em nada.
+// 1.6: nos capítulos 4 e 5 (fornecedores: "leve") a Ligeira e a Serra continuam atendendo, mas o caminhão
+// automático segue como antes (preço normal, enche o depósito) e perecíveis não estragam: negociar é uma
+// ferramenta para economizar e se preparar para o pico, não uma obrigação nova. fornCompleto() só no Ipê.
 // =====================================================================
 const FORN = {
   ligeira: { id: "ligeira", nome: "Distribuidora Ligeira", pedir: "Pedir à Ligeira", ic: "🚐", cor: "#3f74b8", lote: 30, fator: 1, prazo: 30,
@@ -2422,6 +2431,8 @@ const FORN = {
 const FORN_CFG = { fatorAuto: 1.3, emergencia: 6, multa: 0.2, repasse: 0.5, repasseLote: 10, validade: 0.15, maxPendentes: 8 };
 const PERECIVEIS = new Set(["hortifruti", "laticinios", "padaria", "acougue", "frios"]);
 const fornAtivo = () => NA_CARREIRA && !!CFG && !!CFG.fornecedores;
+const fornCompleto = () => fornAtivo() && CFG.fornecedores === true;     // Ipê: caminhão só de emergência, mais caro, e validade
+const fatorCaminhao = () => fornCompleto() ? FORN_CFG.fatorAuto : 1;
 const tAbs = () => (S.day - 1) * DAY_LEN + S.dayT;          // tempo de jogo da loja, em segundos
 const secDef = id => SECTORS.find(d => d.id === id);
 const pct = v => `${Math.round(v * 100)}%`;
@@ -2496,12 +2507,14 @@ function repassar(secId) {
   toast(`Repassadas ${n} caixas de ${d.name} por M ${fmt(v)}.`); anunciar(`Repassadas ${n} caixas de ${d.name} por M ${fmt(v)}.`);
   save(); lastSig = ""; renderSheet(); return true;
 }
-function alternarAuto() { const f = fornEstado(); f.auto = !f.auto; toast(f.auto ? "Reposição automática ligada (emergência, 30% mais cara)." : "Reposição automática desligada: só chegam os seus pedidos."); save(); lastSig = ""; renderSheet(); }
+function alternarAuto() { const f = fornEstado(); f.auto = !f.auto; toast(f.auto ? (fornCompleto() ? "Reposição automática ligada (emergência, 30% mais cara)." : "Caminhão automático ligado (preço normal).") : "Reposição automática desligada: só chegam os seus pedidos."); save(); lastSig = ""; renderSheet(); }
+const textoAuto = f => fornCompleto() ? `Reposição automática do distribuidor: <b>${f.auto ? "ligada" : "desligada"}</b>. Só mantém até ${FORN_CFG.emergencia} caixas por setor e cobra ${pct(FORN_CFG.fatorAuto - 1)} a mais.`
+  : `Caminhão automático: <b>${f.auto ? "ligado" : "desligado"}</b>. Preço normal; ele completa o depósito com o espaço que sobrar dos seus pedidos.`;
 
 // ---------- fechamento do dia: validade e margem ----------
 function fornFimDoDia(L) {
   const t = S.today, venc = {}; let perdasVal = 0;
-  PERECIVEIS.forEach(id => {
+  if (fornCompleto()) PERECIVEIS.forEach(id => {
     const st = S.sec[id]; if (!st.open || st.wh < 5) return;
     const n = Math.floor(st.wh * FORN_CFG.validade); if (n <= 0) return;
     st.wh -= n; venc[id] = n; perdasVal += n * custoUnit(secDef(id), st);
@@ -2527,6 +2540,7 @@ function setorSugerido() {          // o setor aberto com menos estoque por vend
 }
 function sigForn() { if (!fornAtivo()) return ""; const f = fornEstado(); return `${f.pedidos.map(p => p.id).join(",")}:${f.recebidos.ligeira}${f.recebidos.serra}:${f.auto}:${ui.fornSec || ""}:${S.fase.concluida}`; }
 function missaoFornecedor() {
+  if (!fornCompleto()) return null;
   const f = fornEstado(); if (f.pedidos.length) return null;
   const r = f.recebidos;
   if (r.ligeira + r.serra === 0) return { title: "Fazer o primeiro pedido", sub: "Compare a Distribuidora Ligeira e o Atacado Serra", p: 0, ring: "🚚", go: () => openSheet("forn") };
@@ -2539,7 +2553,7 @@ function cartaoFornecedores() {
   card.innerHTML = `<h3>🚚 Fornecedores e depósito</h3>
     <p class="note" id="fnResumo"></p>`;
   live(() => { const e = card.querySelector("#fnResumo"); if (!e) return; const L = S.lastDay;
-    e.textContent = `Depósito ${whUsed()} de ${whCap(S.whLvl)} caixas, ${reservado()} reservadas para ${f.pedidos.length} pedido${f.pedidos.length === 1 ? "" : "s"} a caminho. Reposição automática ${f.auto ? "ligada" : "desligada"}.${L && L.margem != null ? ` Ontem: margem ${pct(L.margem)}, perdas M ${fmt(L.perdas)}.` : ""}`; });
+    e.textContent = `Depósito ${whUsed()} de ${whCap(S.whLvl)} caixas, ${reservado()} reservadas para ${f.pedidos.length} pedido${f.pedidos.length === 1 ? "" : "s"} a caminho. ${fornCompleto() ? "Reposição automática" : "Caminhão automático"} ${f.auto ? "ligado" : "desligado"}.${L && L.margem != null ? ` Ontem: margem ${pct(L.margem)}, perdas M ${fmt(L.perdas)}.` : ""}`; });
   const b = el("button", "btn", "Negociar com fornecedores"); b.onclick = () => openSheet("forn"); card.appendChild(b);
   return card;
 }
@@ -2551,6 +2565,7 @@ function buildFornecedores(body) {
   const secId = ui.fornSec, d = secDef(secId), st = S.sec[secId];
   head("🚚", "#e3efe2", "Fornecedores", () => `Depósito ${whUsed()}/${whCap(S.whLvl)} · ${reservado()} reservadas · ${Math.max(0, livreDeposito())} livres`);
   body.appendChild(el("p", "note", "Escolha o setor e compare as duas ofertas. O pedido é pago na hora e reserva espaço no depósito até chegar."));
+  if (!fornCompleto()) body.appendChild(el("p", "note", "Aqui o caminhão automático continua trazendo mercadoria pelo preço normal. Pedir à Serra sai 25% mais barato; a Ligeira traz um lote extra no mesmo dia, bom antes do pico."));
   // setor
   body.appendChild(el("div", "sec-title", "Setor"));
   const seg = el("div", "acts setores-forn"); seg.setAttribute("role", "group"); seg.setAttribute("aria-label", "Setor do pedido");
@@ -2566,7 +2581,7 @@ function buildFornecedores(body) {
     ["Vendeu ontem", () => `${vendasOntem(secId)} un.`],
     ["Margem do estoque", () => pct(margemAtual(d))],
   ]));
-  if (PERECIVEIS.has(secId)) body.appendChild(el("p", "note", `⚠️ Perecível: no fechamento de cada dia, ${pct(FORN_CFG.validade)} do que estiver parado no depósito estraga (a partir de 5 caixas).`));
+  if (PERECIVEIS.has(secId) && fornCompleto()) body.appendChild(el("p", "note", `⚠️ Perecível: no fechamento de cada dia, ${pct(FORN_CFG.validade)} do que estiver parado no depósito estraga (a partir de 5 caixas).`));
   // ofertas lado a lado
   body.appendChild(el("div", "sec-title", "Ofertas"));
   const g = el("div", "ofertas");
@@ -2608,7 +2623,7 @@ function buildFornecedores(body) {
   const n = Math.min(FORN_CFG.repasseLote, st.wh), v = Math.round(n * custoUnit(d, st) * FORN_CFG.repasse * 100) / 100;
   const br = el("button", "plain", `<span>${n > 0 ? `Repassar ${n} caixas de ${d.name} a outro comerciante por M ${fmt(v)} (metade do custo)` : `Sem caixas de ${d.name} no depósito para repassar`}</span>`);
   br.disabled = n <= 0; br.onclick = () => repassar(secId); body.appendChild(br);
-  const ba = el("button", "plain toggle", `<span>Reposição automática do distribuidor: <b>${f.auto ? "ligada" : "desligada"}</b>. Só mantém até ${FORN_CFG.emergencia} caixas por setor e cobra ${pct(FORN_CFG.fatorAuto - 1)} a mais.</span>`);
+  const ba = el("button", "plain toggle", `<span>${textoAuto(f)}</span>`);
   ba.setAttribute("aria-pressed", String(f.auto)); ba.onclick = alternarAuto; body.appendChild(ba);
   if (f.hist.length) {
     body.appendChild(el("div", "sec-title", "Recebidos"));
@@ -2638,7 +2653,7 @@ function confirmarPedido(fid, secId) {
       <tr><td>Depósito livre depois</td><td>${depois} caixas</td></tr>
       <tr><td>Caixa depois</td><td>M ${fmt(S.money - o.total)}</td></tr>
     </table>
-    ${o.perecivel ? `<div class="warn">Perecível: ${pct(FORN_CFG.validade)} do que sobrar no depósito estraga a cada fechamento. Peça o que você consegue vender.</div>` : ""}
+    ${o.perecivel && fornCompleto() ? `<div class="warn">Perecível: ${pct(FORN_CFG.validade)} do que sobrar no depósito estraga a cada fechamento. Peça o que você consegue vender.</div>` : ""}
     <button class="btn" id="sim">Confirmar pedido</button>
     <button class="plain" id="nao" style="margin-top:8px;width:100%;justify-content:center"><span>Voltar</span></button>`);
   document.getElementById("sim").onclick = () => { hideModal(); const res = fazerPedido(fid, secId); if (!res.ok && res.txt) confirmarPedido(fid, secId); };
@@ -2939,10 +2954,10 @@ const DEL_CFG = { filaMax: 6, custoMax: 0.22, picos: 3 };
 FASE_CFG.restinga = {
   capitulo: 4, titulo: "Supermercado Restinga", lugar: "Centro",
   resumo: "Supermercado do Centro com duas entradas: a do estacionamento (carros, carrinhos e compras maiores) e a da avenida (gente a pé e do ônibus, compras rápidas).",
-  intro: "Agora você <b>delega</b>: nomeie um encarregado de reposição, líderes de setor e um fiscal de frente de loja, e contrate volantes. Cada um custa salário e faz parte da gestão sozinho. No <b>horário de pico</b>, escolha quantos volantes abrem caixas extras e quantos repõem gôndolas. As metas medem a qualidade do serviço e o custo da equipe.",
+  intro: "Agora você <b>delega</b>: nomeie um encarregado de reposição, líderes de setor e um fiscal de frente de loja, e contrate volantes. Cada um custa salário e faz parte da gestão sozinho. No <b>horário de pico</b>, escolha quantos volantes abrem caixas extras e quantos repõem gôndolas. As metas medem a qualidade do serviço e o custo da equipe. Os fornecedores do Ipê continuam atendendo: o caminhão automático volta ao preço normal, e a Serra segue 25% mais barata.",
   essenciais: ["mercearia", "bebidas", "hortifruti", "laticinios", "padaria", "acougue"],
   dia: { vazioMax: 0.15, perdidosMax: 0.08, repMin: 3.9 },
-  diasSeguidos: 3, lucroMedio: 260,
+  diasSeguidos: 3, lucroMedio: 260, fornecedores: "leve",
   aluguel: 120, fluxo: 1.25,
   aberturas: { frios: 3000, limpeza: 5000 },
   convite: {
@@ -3110,7 +3125,7 @@ function cancelarEntrega(id, motivo) {
   const e = ent(), k = e.pedidos.findIndex(p => p.id === id); if (k < 0) return false;
   const o = e.pedidos[k]; if (!["aceito", "separando", "pronto"].includes(o.estado)) return false;     // na moto não volta
   volantes.forEach(v => { if (v.pedido === o.id) { v.pedido = null; v.state = "voltando"; v.path = routeTo(v, P.whDoor.x, P.whDoor.y + 6); } });
-  devolver(o); e.pedidos.splice(k, 1); e.hoje.cancelados++; e.totCancel++; changeRep(ENT_CFG.repCancela);
+  devolver(o); e.pedidos.splice(k, 1); e.hoje.cancelados++; e.totCancel++; changeRep(ENT_CFG.repCancela, "entregaCancelada");
   float(EXPED().x, EXPED().y - 20, "❌ pedido cancelado", "#c9513a");
   if (motivo) toast(motivo);
   save(); lastSig = ""; return true;
@@ -3118,7 +3133,7 @@ function cancelarEntrega(id, motivo) {
 function enviarSemFalta(id, auto) {
   const o = ent().pedidos.find(p => p.id === id); if (!o || o.estado !== "aceito" || !faltando(o)) return false;
   if (!reservadas(o)) return cancelarEntrega(id, "Nada do pedido estava no depósito: cancelado sem cobrança.");
-  o.parcial = true; o.itens.forEach(i => i.q = i.res); ent().hoje.parciais++; changeRep(ENT_CFG.repParcial);
+  o.parcial = true; o.itens.forEach(i => i.q = i.res); ent().hoje.parciais++; changeRep(ENT_CFG.repParcial, "entregaParcial");
   if (!auto) toast(`Pedido ${o.id} vai sem o que faltava. O cliente paga só o que receber.`); else float(EXPED().x, EXPED().y - 20, `#${o.id} sai sem o que falta`, "#b7773b");
   save(); lastSig = ""; return true;
 }
@@ -3130,7 +3145,7 @@ function entregar(o) {          // chamado uma vez, quando o motoboy chega ao cl
   o.pago = true; o.valor = v; o.atrasado = atrasado;
   S.money += v; S.earned += v; S.today.outras = (S.today.outras || 0) + v; e.hoje.receita += v; e.receitaTot += v;
   e.hoje.entregues++; e.totEntregues++;
-  if (atrasado) { e.hoje.atrasados++; changeRep(ENT_CFG.repAtraso); } else { e.hoje.noPrazo++; e.totNoPrazo++; changeRep(0.01); }
+  if (atrasado) { e.hoje.atrasados++; changeRep(ENT_CFG.repAtraso, "entregaAtrasada"); } else { e.hoje.noPrazo++; e.totNoPrazo++; changeRep(0.01, "entregaPrazo"); }
   return v;
 }
 
@@ -3317,10 +3332,10 @@ const ENT_META = { noPrazo: 60, taxa: 0.8, minPedidos: 12 };
 FASE_CFG.pitanga = {
   capitulo: 5, titulo: "Mercado Pitanga", lugar: "Centro",
   resumo: "Mercado do Centro com balcão de expedição e motos na calçada: a mesma equipe e o mesmo estoque atendem o salão e os pedidos de entrega.",
-  intro: "Agora há <b>entregas</b>. Aceitar um pedido reserva o estoque do depósito; volantes separam e motoboys levam. Divida a equipe por <b>turno</b>, ajuste a <b>capacidade</b> e o <b>raio</b>, e fique de olho: quando muita gente separa pedidos, a loja pode sofrer. O cliente paga na entrega, uma única vez.",
+  intro: "Agora há <b>entregas</b>. Aceitar um pedido reserva o estoque do depósito; volantes separam e motoboys levam. Divida a equipe por <b>turno</b>, ajuste a <b>capacidade</b> e o <b>raio</b>, e fique de olho: quando muita gente separa pedidos, a loja pode sofrer. O cliente paga na entrega, uma única vez. A Ligeira e a Serra continuam atendendo, além do caminhão automático.",
   essenciais: ["mercearia", "bebidas", "hortifruti", "laticinios", "padaria", "acougue"],
   dia: { vazioMax: 0.15, perdidosMax: 0.08, repMin: 3.9 },
-  diasSeguidos: 4, lucroMedio: 420,
+  diasSeguidos: 4, lucroMedio: 420, fornecedores: "leve",
   aluguel: 110, fluxo: 1.1,
   aberturas: { frios: 3000, limpeza: 5000 },
   convite: {
@@ -3501,9 +3516,10 @@ function diaLocacao(L, cfg, extraReceita) {
   ocupadas(L).forEach(u => {
     const o = u.ocup, car = o.carencia > 0, devido = (car ? 0 : o.aluguel) + (o.pct ? o.vendas * o.pct : 0);   // 1.4: carência negociada não cobra o aluguel fixo
     if (car) o.carencia--;
-    if (Math.random() < o.risco) { o.divida += devido; o.atrasos++; atrasou++; }
-    else { receita += devido + o.divida; o.divida = 0; if (o.atrasos > 0 && Math.random() < 0.5) o.atrasos--; }
-    o.vendas = 0; o.resta--;
+    const parc = o.parcela && o.parcela.resta > 0 ? o.parcela.valor : 0;       // 1.6: dívida negociada em parcelas (06k)
+    if (Math.random() < o.risco) { o.divida += devido; o.atrasos++; atrasou++; o.ultPago = 0; }
+    else { const pago = devido + o.divida + parc; receita += pago; o.divida = 0; o.pagoTot = (o.pagoTot || 0) + pago; o.ultPago = pago; if (parc) { o.parcela.resta--; if (o.parcela.resta <= 0) o.parcela = null; } if (o.atrasos > 0 && Math.random() < 0.5) o.atrasos--; }
+    o.ultVendas = o.vendas; o.vendas = 0; o.resta--;
     if (o.resta <= 0) fins.push(u);
   });
   fins.forEach(u => { if (!L.propostas.some(p => p.unidade === u.id && p.renovacao)) gerarProposta(L, cfg, u); });
@@ -3534,6 +3550,7 @@ function cartaoUnidade(L, u, cfg, onMuda) {
     ? `<div class="req"><span>${R.ic} <b>${o.nome}</b> <span class="tag">${u.nome || T.nome}</span></span><b>M ${fmt(o.aluguel)}/dia${o.pct ? ` + ${Math.round(o.pct * 100)}%` : ""}</b></div>
        <p class="note">${R.nome}${o.carencia > 0 ? ` · <span class="tag aviso">carência: mais ${o.carencia} sem aluguel fixo</span>` : ""} · contrato: ${o.resta > 0 ? `mais ${o.resta} dia(s)` : "<b>vencido, espera renovação</b>"}${o.divida > 0 ? ` · <span class="tag ruim">deve M ${fmt(o.divida)} (${o.atrasos} atraso${o.atrasos === 1 ? "" : "s"})</span>` : ""}</p>`
     : `<div class="req"><span>🏷️ <b>${u.nome || T.nome}</b> <span class="tag aviso">vaga</span></span><b>custa M ${fmt(cfg.custoVaga)}/dia</b></div><p class="note">Cabe: ${T.ramos.filter(r => !cfg.ramos || cfg.ramos.includes(r)).map(r => RAMOS[r].nome.toLowerCase()).join(", ")}.</p>`);
+  if (o && typeof abrirContrato === "function") { const b = el("button", "plain mini", `<span>Abrir contrato</span>`); b.setAttribute("aria-label", `Abrir o contrato de ${o.nome}`); b.onclick = () => abrirContrato(L, u.id, cfg); c.appendChild(b); }
   if (o && o.atrasos >= 2) { const b = el("button", "plain mini", `<span>Encerrar contrato por falta de pagamento</span>`); b.onclick = () => { if (despejar(L, u.id)) { toast(`${o.nome} saiu. A dívida de M ${fmt(o.divida)} ficou para a cobrança.`); onMuda(); } }; c.appendChild(b); }
   return c;
 }
@@ -3587,6 +3604,12 @@ const AT_CFG = {
   chegada: 14, permanencia: 18, multa: 35, descarga: 3.5, levar: 5, atendimento: 3.2, paciencia: 9, pacienciaFila: 22,
 };
 const AT_ATIVO = NA_CARREIRA && FASE === "cajueiro";
+// 1.6: duas distribuidoras de paletes. A Ligeira é a de sempre (1 palete, chega rápido); a Serra vende em lote
+// de 3 paletes do mesmo setor, 15% mais barato, mas a carreta demora e o lote ocupa o porta-paletes desde o pedido.
+const AT_FORN = {
+  ligeira: { id: "ligeira", nome: "Distribuidora Ligeira", ic: "🚐", fator: 1, chegada: 14, lote: 1, resumo: "1 palete por vez, preço cheio, chega em 14 s" },
+  serra: { id: "serra", nome: "Atacado Serra", ic: "🚛", fator: 0.85, chegada: 60, lote: 3, resumo: "lote de 3 paletes do mesmo setor, 15% mais barato, chega em 60 s" },
+};
 const GAL_CFG = { ramos: TAMANHOS.sala.ramos, cadaProposta: 40, validade: 45, maxPropostas: 3, custoFixo: 20, custoVaga: 10, custoOcupada: 4 };
 const novoAtac = () => ({ nPos: 6, pos: Array.from({ length: 9 }, () => ({ sec: null, fardos: 0 })), dep: {}, depLvl: 0, docas: 1, ops: 2, opsDoca: 1, balcao: 1,
   carretas: [], transito: [], seq: 1, auto: false, hoje: novoHojeAt(), dias: [], totFardos: 0, totMultas: 0 });
@@ -3601,7 +3624,8 @@ function at() {
 function galeria() { if (!S.galeria) S.galeria = novoConjunto([1, 2, 3, 4].map(i => ({ id: "g" + i, tam: "sala", nome: `Sala ${i}` }))); return S.galeria; }
 const secDefAt = id => SECTORS.find(d => d.id === id);
 const precoFardo = id => Math.round(AT_CFG.fardo * secPrice(secDefAt(id), S.sec[id].priceLvl) * AT_CFG.precoFardo * 100) / 100;
-const custoPalete = id => Math.round(AT_CFG.fardo * AT_CFG.palete * boxCost(secDefAt(id), S.sec[id].priceLvl) * AT_CFG.custoFardo * 100) / 100;
+const custoPalete = (id, fid) => Math.round(AT_CFG.fardo * AT_CFG.palete * boxCost(secDefAt(id), S.sec[id].priceLvl) * AT_CFG.custoFardo * AT_FORN[fid || "ligeira"].fator * 100) / 100;
+const chegadaDe = p => p.chega || AT_CFG.chegada;
 const depCapAt = () => AT_CFG.depCap[at().depLvl];
 const depUsado = () => Object.values(at().dep).reduce((a, n) => a + n, 0);
 const paletesChegando = () => at().transito.reduce((a, p) => a + p.n, 0) + at().carretas.reduce((a, c) => a + c.restante, 0);
@@ -3646,7 +3670,7 @@ function causaVazia() {
     if (depUsado() >= depCapAt()) return { n: vaz.length, title: "Depósito de paletes cheio", sub: "A carreta espera espaço: amplie o porta-paletes ou libere posições", aviso: true };
     return { n: vaz.length, title: "Carreta descarregando", sub: "O palete chega em instantes", aviso: false };
   }
-  if (sec.some(id => a.transito.some(p => p.itens[id] > 0))) { const t = Math.max(0, Math.ceil(AT_CFG.chegada - Math.max(...a.transito.filter(p => sec.some(id => p.itens[id] > 0)).map(p => p.t))));
+  if (sec.some(id => a.transito.some(p => p.itens[id] > 0))) { const t = Math.max(0, Math.ceil(Math.min(...a.transito.filter(p => sec.some(id => p.itens[id] > 0)).map(p => chegadaDe(p) - p.t))));
     return { n: vaz.length, title: "Palete a caminho", sub: `Chega de carreta em cerca de ${t} s`, aviso: false }; }
   if (a.auto && a.autoSt && a.autoSt.tipo === "saldo") return { n: vaz.length, title: "Compra automática sem saldo", sub: `Faltam M ${fmt(Math.max(1, a.autoSt.falta))} para o próximo palete`, aviso: true };
   if (a.auto && a.autoSt && a.autoSt.tipo === "cheio") return { n: vaz.length, title: "Depósito de paletes cheio", sub: "A compra automática não tem onde guardar", aviso: true };
@@ -3666,19 +3690,21 @@ const DOCA = k => ({ x: DEP.x + 8 + k * 64, y: 2, w: 58, h: 34 });
 const GAL = k => ({ x: W + 22, y: 126 + k * 58, w: 160, h: 50 });
 
 // ---------- compras de paletes, carretas e docas ----------
-function comprarPaletes(id, n, silencioso) {
-  const a = at(), c = custoPalete(id) * n;
+function comprarPaletes(id, n, silencioso, fid) {
+  const fo = AT_FORN[fid || "ligeira"]; n = Math.max(n, fo.lote);
+  const a = at(), c = Math.round(custoPalete(id, fo.id) * n * 100) / 100;
   if (S.money < c || S.money < 0) { if (!silencioso) toast(`Falta dinheiro: ${n} palete(s) de ${nomeSetor(id)} custam M ${fmt(c)}.`); return false; }
   if (depUsado() + paletesChegando() + n > depCapAt()) { if (!silencioso) toast(`O depósito de paletes não comporta: ${depUsado()} guardados e ${paletesChegando()} a caminho, de ${depCapAt()}.`); return false; }
   S.money -= c; S.today.outrasDesp = (S.today.outrasDesp || 0) + c; a.hoje.custo += c; a.hoje.paletes += n;
   const ult = a.transito[a.transito.length - 1];
-  if (ult && ult.t < 3) { ult.itens[id] = (ult.itens[id] || 0) + n; ult.n += n; }        // pedidos seguidos vão na mesma carreta
-  else a.transito.push({ id: a.seq++, itens: { [id]: n }, n, t: 0 });
-  if (!silencioso) anunciar(`${n} palete(s) de ${nomeSetor(id)} pedidos: M ${fmt(c)}. Chegam de carreta.`);
+  if (ult && ult.t < 3 && (ult.forn || "ligeira") === fo.id) { ult.itens[id] = (ult.itens[id] || 0) + n; ult.n += n; }        // pedidos seguidos da mesma distribuidora vão na mesma carreta
+  else a.transito.push({ id: a.seq++, itens: { [id]: n }, n, t: 0, forn: fo.id, chega: fo.chegada });
+  a.pedidosForn = a.pedidosForn || {}; a.pedidosForn[fo.id] = (a.pedidosForn[fo.id] || 0) + n;
+  if (!silencioso) anunciar(`${n} palete(s) de ${nomeSetor(id)} pedidos à ${fo.nome}: M ${fmt(c)}. Chegam de carreta em cerca de ${fo.chegada} s.`);
   lastSig = ""; return true;
 }
 function tickCarretas(dt, a) {
-  for (let k = a.transito.length - 1; k >= 0; k--) { const p = a.transito[k]; p.t += dt; if (p.t >= AT_CFG.chegada) { a.transito.splice(k, 1); a.carretas.push({ id: p.id, itens: p.itens, restante: p.n, espera: 0, multada: false, doca: null }); lastSig = ""; } }
+  for (let k = a.transito.length - 1; k >= 0; k--) { const p = a.transito[k]; p.t += dt; if (p.t >= chegadaDe(p)) { a.transito.splice(k, 1); a.carretas.push({ id: p.id, itens: p.itens, restante: p.n, espera: 0, multada: false, doca: null }); lastSig = ""; } }
   // carretas encostam nas docas livres, por ordem de chegada
   a.carretas.forEach(c => { if (c.doca == null) { const livre = [...Array(a.docas).keys()].find(d => !a.carretas.some(o => o.doca === d)); if (livre != null) c.doca = livre; } });
   a.carretas.forEach(c => { if (c.doca == null || c.restante > 0) c.espera += dt;
@@ -3732,7 +3758,7 @@ function passoEmpilhadeira(e, dt, a) {
       if (comerciantes.some(c => c.alvo === k && c.estado === "pegando")) return;      // espera quem está pegando fardos sair do trecho
       p.isolada = true; e.t = 0; e.tarefa.semDeposito = isRush() && a.pulmao !== "urgente"; anunciar(`Posição ${k + 1} isolada por ${AT_CFG.isolar} segundos para a empilhadeira. Os corredores continuam livres.`); }
     e.t += dt; a.hoje.isoladoS += dt; if (e.t < AT_CFG.isolar) return;
-    if (e.tarefa.tipo === "descer") { if (p.alto > 0) { p.alto--; p.fardos += AT_CFG.palete; a.hoje.descidas++; if (e.tarefa.semDeposito) a.hoje.semDeposito = (a.hoje.semDeposito || 0) + 1; if (isRush()) { a.hoje.urgentes++; if (comerciantes.some(c => c.alvo === k && c.estado !== "saindo")) changeRep(-0.01); } } p.reservada = false; }
+    if (e.tarefa.tipo === "descer") { if (p.alto > 0) { p.alto--; p.fardos += AT_CFG.palete; a.hoje.descidas++; if (e.tarefa.semDeposito) a.hoje.semDeposito = (a.hoje.semDeposito || 0) + 1; if (isRush()) { a.hoje.urgentes++; if (comerciantes.some(c => c.alvo === k && c.estado !== "saindo")) changeRep(-0.01, "manobra"); } } p.reservada = false; }
     else { p.alto++; e.carga = null; a.hoje.subidas++; p.subindo = false; }
     p.isolada = false; e.tarefa = null; const cor = corredorPara(e.x, P.whDoor.x); e.path = [{ x: cor, y: e.y }, { x: cor, y: P.whDoor.y + 6 }, { x: P.whDoor.x, y: P.whDoor.y + 6 }]; lastSig = "";
     return;
@@ -3772,7 +3798,7 @@ function proximoComerciante(c, a) {
   c.path = [{ x: cor, y: c.y }, { x: cor, y: b.serve.y }, { x: b.serve.x, y: b.serve.y }];
 }
 function sairComerciante(c, a, motivo) {
-  if (motivo) { a.hoje.perdidos++; changeRep(-0.06); float(c.x, c.y - 18, motivo, "#c9513a");
+  if (motivo) { a.hoje.perdidos++; changeRep(-0.06, "comerciante"); float(c.x, c.y - 18, motivo, "#c9513a");
     c.plano.forEach(i => { if (i.got) { const k = a.pos.findIndex((p, j) => j < a.nPos && p.sec === i.sec); if (k >= 0) a.pos[k].fardos += i.got; else guardarSoltos(a, i.sec, i.got); i.got = 0; } }); }   // devolve o que pegou
   c.estado = "saindo"; const cor = corredorPara(c.x, 0); c.path = [{ x: cor, y: c.y }, { x: cor, y: FZ + 10 }, { x: 12, y: FZ + 16 }, { x: -30, y: FZ + 16 }];
 }
@@ -3802,7 +3828,7 @@ function tickComerciantes(dt, a) {
     const c = filaAtac()[k]; if (!c || c.estado !== "fila" || Math.abs(c.x - (b.serve.x - k * 20)) > 3) { tBalcao[k] = 0; continue; }
     tBalcao[k] += dt; if (tBalcao[k] < AT_CFG.atendimento) continue; tBalcao[k] = 0;
     const v = c.plano.reduce((s, it) => s + it.got * precoFardo(it.sec), 0), nf = c.plano.reduce((s, it) => s + it.got, 0);
-    S.money += v; S.earned += v; S.today.outras = (S.today.outras || 0) + v; a.hoje.receita += v; a.hoje.fardos += nf; a.totFardos += nf; changeRep(0.02);
+    S.money += v; S.earned += v; S.today.outras = (S.today.outras || 0) + v; a.hoje.receita += v; a.hoje.fardos += nf; a.totFardos += nf; changeRep(0.02, "fardos");
     float(b.serve.x, b.serve.y - 30, `📦 ${nf} fardos +M ${fmt(v)}`, "#2e7a57");
     c.plano.forEach(it => it.got = 0); sairComerciante(c, a, null);
   }
@@ -3821,10 +3847,10 @@ function tickAtacado(dt) {
     let st = { tipo: "ok" };
     for (const id of secs) { const tem = (a.dep[id] || 0) + noCaminho(id);
       if (tem >= 2 + altoLivre(id)) continue;
-      const c = custoPalete(id), falta = c + bills() + 60 - S.money;
-      if (depUsado() + paletesChegando() + 1 > depCapAt()) { st = { tipo: "cheio", sec: id }; continue; }
+      const fo = AT_FORN[a.autoForn || "ligeira"], c = custoPalete(id, fo.id) * fo.lote, falta = c + bills() + 60 - S.money;
+      if (depUsado() + paletesChegando() + fo.lote > depCapAt()) { st = { tipo: "cheio", sec: id }; continue; }
       if (falta >= 0) { if (st.tipo === "ok") st = { tipo: "saldo", sec: id, falta }; continue; }
-      comprarPaletes(id, 1, true); st = { tipo: "comprando", sec: id }; break; }
+      comprarPaletes(id, fo.lote, true, fo.id); st = { tipo: "comprando", sec: id }; break; }
     a.autoSt = st; } } else a.autoSt = null;
 }
 function fecharGaleria() {           // antes do fechamento: aluguéis e custos da galeria entram no resultado do dia
@@ -3867,6 +3893,8 @@ function ampliar(oque) {
   else if (oque === "doca") { if (a.docas >= 2) return; if (!pagarContratacao(AT_CFG.docaCusto, "a segunda doca")) return; a.docas = 2; banner("🚛 Segunda doca aberta", "#e8711a"); }
   save(); lastSig = ""; renderSheet();
 }
+function escolherFornAuto(fid) { const a = at(); if (!AT_FORN[fid]) return; a.autoForn = fid; const fo = AT_FORN[fid];
+  toast(`Compra automática pela ${fo.nome}: ${fo.resumo}.`); save(); lastSig = ""; renderSheet(); }
 function alternarAutoPal() { const a = at(); a.auto = !a.auto; toast(a.auto ? "Compra automática: mantém 2 paletes de cada setor da faixa (no depósito ou a caminho)." : "Compra de paletes manual."); save(); lastSig = ""; renderSheet(); }
 
 // ---------- desenho ----------
@@ -3956,9 +3984,23 @@ function buildAtacado(body) {
   body.appendChild(el("div", "sec-title", "Comprar paletes"));
   const cc = el("div", "card");
   const ab = el("button", "plain toggle", `<span>Compra automática (2 por setor da faixa): <b id="atAutoSt">${autoTxt()}</b></span>`); live(() => { const q = ab.querySelector("#atAutoSt"); if (q) q.textContent = autoTxt(); }); ab.setAttribute("aria-pressed", String(a.auto)); ab.onclick = alternarAutoPal; cc.appendChild(ab);
+  // distribuidora: rápida ou barata (vale para os botões e para a compra automática)
+  const fsel = AT_FORN[ui.atForn] ? ui.atForn : (a.autoForn || "ligeira");
+  const seg = el("div", "acts setores-forn"); seg.setAttribute("role", "group"); seg.setAttribute("aria-label", "Distribuidora de paletes");
+  Object.values(AT_FORN).forEach(fo => { const bt = el("button", "plain mini" + (fo.id === fsel ? " toggle" : ""), `<span>${fo.ic} ${fo.nome}</span>`);
+    bt.setAttribute("aria-pressed", String(fo.id === fsel)); bt.setAttribute("aria-label", `${fo.nome}: ${fo.resumo}`);
+    bt.onclick = () => { ui.atForn = fo.id; lastSig = ""; renderSheet(); }; seg.appendChild(bt); });
+  cc.appendChild(seg);
+  const fo = AT_FORN[fsel];
+  cc.appendChild(el("p", "note", `${fo.ic} <b>${fo.nome}</b>: ${fo.resumo}. ${fo.lote > 1 ? "O lote inteiro reserva lugar no porta-paletes desde o pedido." : "Bom para não deixar posição vazia."}`));
   const g = el("div", "linha2");
-  openSectors().forEach(d => { const b = el("button", "plain mini", `<span>${d.ic} ${d.name}: 1 palete M ${fmt(custoPalete(d.id))} · fardo M ${fmt(precoFardo(d.id))} · tem ${a.dep[d.id] || 0}${noCaminho(d.id) ? ` · ${noCaminho(d.id)} a caminho` : ""}</span>`); b.onclick = () => { comprarPaletes(d.id, 1); renderSheet(); }; g.appendChild(b); });
-  cc.appendChild(g); cc.appendChild(el("p", "note", `Chega em ${AT_CFG.chegada} s de carreta. Carreta parada mais de ${AT_CFG.permanencia} s paga M ${AT_CFG.multa} de taxa de permanência.`));
+  openSectors().forEach(d => { const b = el("button", "plain mini", `<span>${d.ic} ${d.name}: ${fo.lote} palete${fo.lote > 1 ? "s" : ""} M ${fmt(custoPalete(d.id, fo.id) * fo.lote)} · fardo M ${fmt(precoFardo(d.id))} · tem ${a.dep[d.id] || 0}${noCaminho(d.id) ? ` · ${noCaminho(d.id)} a caminho` : ""}</span>`);
+    b.setAttribute("aria-label", `Pedir ${fo.lote} palete${fo.lote > 1 ? "s" : ""} de ${d.name} à ${fo.nome} por M ${fmt(custoPalete(d.id, fo.id) * fo.lote)}`);
+    b.onclick = () => { comprarPaletes(d.id, fo.lote, false, fo.id); renderSheet(); }; g.appendChild(b); });
+  cc.appendChild(g);
+  if ((a.autoForn || "ligeira") !== fsel) { const bu = el("button", "plain", `<span>Usar a ${fo.nome} também na compra automática</span>`); bu.onclick = () => escolherFornAuto(fsel); cc.appendChild(bu); }
+  else cc.appendChild(el("p", "note", `A compra automática usa a ${fo.nome}.`));
+  cc.appendChild(el("p", "note", `Carreta parada mais de ${AT_CFG.permanencia} s paga M ${AT_CFG.multa} de taxa de permanência: lote grande pede empilhadeira na doca.`));
   const cd = AT_CFG.depCusto[a.depLvl]; if (cd != null) { const b = el("button", "plain", `<span>Porta-paletes: ${depCapAt()} → ${AT_CFG.depCap[a.depLvl + 1]} lugares por M ${fmt(cd)}</span>`); b.onclick = () => ampliar("dep"); cc.appendChild(b); }
   body.appendChild(cc);
   // equipe
@@ -3991,7 +4033,7 @@ const AT_META = { fardos: 400, ocupacao: 0.75, perdidosMax: 0.12 };
 FASE_CFG.cajueiro = {
   capitulo: 6, titulo: "Atacarejo Cajueiro", lugar: "RJ-106",
   resumo: "Atacarejo à beira da rodovia: galpão largo, docas de carretas, estacionamento amplo e uma pequena galeria de lojas ao lado.",
-  intro: "Aqui o volume manda. <b>Comerciantes</b> compram <b>fardos</b> direto dos paletes na faixa do salão e pagam no balcão do atacado. Compre paletes, descarregue as carretas nas <b>docas</b> antes da taxa de permanência e divida as empilhadeiras entre doca e salão. Ao lado, a <b>galeria</b> tem quatro salas: escolha inquilinos e acompanhe aluguel, ocupação e despesas.",
+  intro: "Aqui o volume manda. <b>Comerciantes</b> compram <b>fardos</b> direto dos paletes na faixa do salão e pagam no balcão do atacado. Compre paletes da Ligeira (rápida) ou da Serra (lote de 3, mais barato), descarregue as carretas nas <b>docas</b> antes da taxa de permanência e divida as empilhadeiras entre doca e salão. Ao lado, a <b>galeria</b> tem quatro salas: escolha inquilinos e acompanhe aluguel, ocupação e despesas.",
   essenciais: ["mercearia", "bebidas", "hortifruti", "laticinios", "padaria", "acougue"],
   dia: { vazioMax: 0.15, perdidosMax: 0.08, repMin: 3.9 },
   diasSeguidos: 3, lucroMedio: 900,
@@ -4044,7 +4086,8 @@ FASE_CFG.cajueiro = {
     S.rep = Math.max(3, Math.min(3.5, 3 + (r - 3.5) * 0.5));
     ACH.forEach(x => { if (x.ok()) S.ach[x.id] = true; });
   },
-  carregar() { const a = at(); galeria(); a.pos.forEach(p => p.reservada = false); },
+  carregar() { const a = at(); galeria(); a.pos.forEach(p => p.reservada = false);
+    if (!a.autoForn) { a.autoForn = "ligeira"; if (!introFasePendente) S.avisoPal16 = true; } },      // 1.6: partida em andamento ganha a Serra
   reabrir(r) { const a = at(); a.nPos = 9; a.ops = 3; a.docas = 2; a.balcao = 2; a.totFardos = AT_META.fardos; reabrirComum(r); },
   reaberturaTxt: "faixa de 9 posições, 3 empilhadeiras, 2 docas, 2 caixas no atacado e o orçamento inicial do Cajueiro (M 6.000)",
   previa: () => `<svg viewBox="0 0 220 120" class="previa" role="img" aria-label="Esquema do Atacarejo Cajueiro: galpão largo com depósito e docas de carretas no alto, faixa de paletes no salão, balcão do atacado e a galeria com quatro salas à direita">
@@ -4082,7 +4125,7 @@ if (AT_ATIVO) {
     body.appendChild(listaRow("🏬", "#fde9d6", "Galeria Cajueiro", () => { const g = galeria(); return `${ocupadas(g).length} de ${g.unidades.length} salas ocupadas · ${g.propostas.length} proposta(s)`; }, { kind: "galeria" }));
   });
   const a0 = GANCHOS.assinatura;
-  GANCHOS.assinatura = () => { const a = at(); return (a0 ? a0() : "") + `|at${a.nPos}${a.ops}${a.opsDoca}${a.docas}${a.balcao}${a.depLvl}${a.auto}${a.pos.map(p => p.sec).join(",")}${a.carretas.length}${a.transito.length}${a.dias.length}|${sigLocacao(galeria())}`; };
+  GANCHOS.assinatura = () => { const a = at(); return (a0 ? a0() : "") + `|at${a.nPos}${a.ops}${a.opsDoca}${a.docas}${a.balcao}${a.depLvl}${a.auto}${a.autoForn || ""}${a.pos.map(p => p.sec).join(",")}${a.carretas.length}${a.transito.length}${a.dias.length}|${sigLocacao(galeria())}`; };
   GANCHOS.aoVoltar = (days) => {
     if (days <= 0) return [];
     const a = at(); let desc = 0;
@@ -4203,11 +4246,24 @@ const dicaLotacao = () => { const p = gargalo() === "limpeza" ? "limpeza" : "seg
   return s[p] < maxEquipeSh(p) ? "Contrate mais equipe em Operação." : !(s.equip && s.equip[p]) ? `Equipe no máximo: compre ${SH_CFG.equip[p].nome.toLowerCase()} em Operação.` : "Em semana de evento, use o reforço temporário na reunião da semana."; };
 const gargalo = () => capLimpeza() <= capSeguranca() ? "limpeza" : "segurança";
 const dentro = () => visitantes.filter(v => v.estado !== "fora").length;
-function satisfacaoAgora() {
+// 1.6: cada parcela da satisfação, com nome e dica (tocar nas estrelas mostra esta lista)
+function fatoresSatisfacao() {
   const s = sh(), L = lojasSh(), cats = categoriasAtivas(L).filter(c => c !== "ancora").length;
-  const lot = dentro() / Math.max(1, capacidade()), suj = Math.min(1, s.sujeira / 60), ev = eventoAtivo();
-  let v = 0.5 + Math.min(0.16, cats * 0.03) + (1 - suj) * 0.16 - Math.max(0, lot - 0.85) * 0.8 - s.panes.length * 0.07 - (1 - taxaOcupacao(L)) * 0.12
-    + (campanhaAtiva() ? 0.04 : 0) + (ev ? (s.seguranca >= ev.seguranca ? 0.04 : -0.1) : 0) + (ocupadas(L).some(u => u.tam === "ancora") ? 0.05 : 0) + SH_MOD.sat();
+  const lot = dentro() / Math.max(1, capacidade()), suj = Math.min(1, s.sujeira / 60), ev = eventoAtivo(), ocup = taxaOcupacao(L), anc = ocupadas(L).some(u => u.tam === "ancora");
+  return [
+    { id: "variedade", nome: `Variedade: ${cats} categoria(s) de loja`, v: Math.min(0.16, cats * 0.03), max: 0.16, dica: "Assine lojas de categorias diferentes (até 6 categorias contam)." },
+    { id: "limpeza", nome: `Limpeza: ${Math.round((1 - suj) * 100)}% limpo`, v: (1 - suj) * 0.16, max: 0.16, dica: "Contrate limpeza ou compre a lavadora de piso em Operação." },
+    { id: "lotacao", nome: `Lotação: ${Math.round(lot * 100)}% da capacidade`, v: -Math.max(0, lot - 0.85) * 0.8, max: 0, dica: `Acima de 85% incomoda. A ${gargalo()} limita a capacidade: ${dicaLotacao()}` },
+    { id: "panes", nome: s.panes.length ? `${s.panes.length} equipamento(s) com defeito` : "Equipamentos funcionando", v: -s.panes.length * 0.07, max: 0, dica: "Mande consertar no painel de Operação, ou contrate a manutenção completa." },
+    { id: "vagas", nome: `Lojas ocupadas: ${Math.round(ocup * 100)}%`, v: -(1 - ocup) * 0.12, max: 0, dica: "Loja vaga deixa o corredor sem graça: aceite propostas para as salas vazias." },
+    { id: "campanha", nome: campanhaAtiva() ? "Campanha de marketing ativa" : "Sem campanha de marketing", v: campanhaAtiva() ? 0.04 : 0, max: 0.04, dica: "Uma campanha anima os visitantes enquanto dura." },
+    { id: "evento", nome: ev ? (s.seguranca >= ev.seguranca ? "Evento com segurança suficiente" : `Evento com pouca segurança (precisa de ${ev.seguranca})`) : "Sem evento agora", v: ev ? (s.seguranca >= ev.seguranca ? 0.04 : -0.1) : 0, max: ev ? 0.04 : 0, dica: "Em evento, tenha a segurança pedida (contrate, compre câmeras ou use o reforço da reunião)." },
+    { id: "ancora", nome: anc ? "Loja âncora aberta" : "Nenhuma loja âncora", v: anc ? 0.05 : 0, max: 0.05, dica: "Uma âncora (grande loja) atrai e agrada os visitantes." },
+    { id: "extra", nome: "Outros efeitos do capítulo", v: SH_MOD.sat(), max: 0, dica: "" },
+  ];
+}
+function satisfacaoAgora() {
+  const v = fatoresSatisfacao().reduce((a, f) => a + f.v, 0.5);
   return Math.max(0, Math.min(1, v));
 }
 // ---------- visitantes ----------
@@ -4215,7 +4271,7 @@ const visitantes = []; let tPe = 0, tEv = 0;
 function novoVisitante(car, idx, evento) {
   const L = lojasSh(), abertas = ocupadas(L); if (!abertas.length) { if (car) car.back++; return; }
   const s = sh(), Y = lay(), ev = eventoAtivo();
-  if (dentro() >= capacidade() && !SH_MOD.deixarEntrar(evento)) { s.hoje.recusados++; if (evento) s.hoje.evRecusados++; S.today.lost++; changeRep(-0.01); if (car) car.back++; if (!s.avisoLotado) { s.avisoLotado = true; toastOnce("lotadoSh", `Shopping lotado: a ${gargalo()} limita a capacidade a ${capacidade()} pessoas. ${dicaLotacao()}`); } return; }
+  if (dentro() >= capacidade() && !SH_MOD.deixarEntrar(evento)) { s.hoje.recusados++; if (evento) s.hoje.evRecusados++; S.today.lost++; changeRep(-0.01, "lotacao"); if (car) car.back++; if (!s.avisoLotado) { s.avisoLotado = true; toastOnce("lotadoSh", `Shopping lotado: a ${gargalo()} limita a capacidade a ${capacidade()} pessoas. ${dicaLotacao()}`); } return; }
   // roteiro: 1 a 3 lojas, puxado pelo movimento que cada ramo traz
   const n = 1 + (Math.random() < 0.5 ? 1 : 0) + (Math.random() < 0.25 ? 1 : 0), roteiro = [];
   for (let k = 0; k < n; k++) { const tot = abertas.reduce((a, u) => a + RAMOS[u.ocup.ramo].fluxo, 0); let r = Math.random() * tot; const u = abertas.find(x => (r -= RAMOS[x.ocup.ramo].fluxo) <= 0) || abertas[0]; if (!roteiro.includes(u.id)) roteiro.push(u.id); }
@@ -5414,6 +5470,114 @@ if (SH_ATIVO) {
   GANCHOS.listaShopping = body => { ls0(body); body.appendChild(listaRow("🗂️", "#dff0f1", "Reunião da semana", () => { const r = r14(); return r14Ativo() ? `${pendentesReuniao()} em aberto${r.ocorr && !r.ocorr.res ? `; agora: ${r.ocorr.nome}` : ""}` : "começa com o shopping aberto"; }, { kind: "shReuniao" })); };
   gancho("painel", (sel, body) => { if (sel.kind === "shReuniao") { buildReuniao(body); return true; } return null; });
   gancho("bRect", sel => sel.kind === "shReuniao" ? { x: 0, y: 30, w: W, h: H - 26 } : null);
+}
+</script>
+<script>
+"use strict";
+// =====================================================================
+// 1.6: cada contrato de locação (galeria do atacarejo e lojas do shopping) abre numa ficha própria:
+// - análise: aluguel, % das vendas, quanto já pagou, dívida, atrasos, risco, prazo e movimento que traz;
+// - cobrar a dívida (uma tentativa por fechamento; pode pagar ou pedir prazo);
+// - negociar a dívida: parcela em 3 fechamentos com 15% de desconto;
+// - propor loja maior ou menor (outra unidade vaga onde o ramo cabe; o aluguel acompanha o tamanho);
+// - prorrogar o contrato (+8 períodos, aluguel 5% maior);
+// - encerrar antes do prazo pagando multa (ex.: liberar espaço para uma âncora). A dívida do inquilino é
+//   abatida da multa.
+// Galeria: 1 período = 1 dia. Shopping: 1 período = 1 semana.
+// =====================================================================
+const CT_CFG = { parcelas: 3, descontoParc: 0.15, prorroga: 8, aumentoProrroga: 0.05, multaFrac: 0.3, multaMaxPer: 10 };
+const CT_AREA = { quiosque: 0.5, sala: 1, alimento: 0.8, pequena: 1, media: 1.4, ancora: 3 };
+const ctPer = n => (typeof SH_ATIVO !== "undefined" && SH_ATIVO) ? (n === 1 ? "semana" : "semanas") : (n === 1 ? "dia" : "dias");
+const ctFech = () => (typeof SH_ATIVO !== "undefined" && SH_ATIVO) ? "fechamento da semana" : "fechamento do dia";
+const ctUnid = (L, uid) => L.unidades.find(x => x.id === uid);
+const ctNomeU = u => u.nome || TAMANHOS[u.tam].nome;
+function chanceCobranca(o) { return Math.max(0.25, Math.min(0.9, 0.8 - o.risco * 6 - o.atrasos * 0.1)); }
+function multaEncerrar(o) { const bruta = Math.max(o.aluguel, Math.round(o.aluguel * Math.min(Math.max(0, o.resta), CT_CFG.multaMaxPer) * CT_CFG.multaFrac)); return { bruta, liquida: Math.max(0, bruta - Math.round(o.divida || 0)) }; }
+function destinosMudanca(L, u, cfg) {
+  const o = u.ocup;
+  return L.unidades.filter(x => !x.ocup && x.tam !== u.tam && TAMANHOS[x.tam].ramos.includes(o.ramo) && (!cfg.ramos || cfg.ramos.includes(o.ramo)))
+    .map(x => ({ u: x, aluguel: Math.max(1, Math.round(o.aluguel * (CT_AREA[x.tam] || 1) * (x.mult || 1) / ((CT_AREA[u.tam] || 1) * (u.mult || 1)))), maior: (CT_AREA[x.tam] || 1) * (x.mult || 1) > (CT_AREA[u.tam] || 1) * (u.mult || 1) }));
+}
+// ---------- ações (devolvem { ok, txt }) ----------
+function cobrarDivida(L, uid) {
+  const u = ctUnid(L, uid), o = u && u.ocup; if (!o || !(o.divida > 0)) return { ok: false, txt: "Não há dívida para cobrar." };
+  if (o.cobradoDia === S.day) return { ok: false, txt: `Você já cobrou ${o.nome} neste período. Tente de novo depois do ${ctFech()}.` };
+  o.cobradoDia = S.day;
+  if (Math.random() < chanceCobranca(o)) { const v = Math.round(o.divida * 100) / 100; S.money += v; S.earned += v; S.today.outras = (S.today.outras || 0) + v; o.pagoTot = (o.pagoTot || 0) + v; o.divida = 0; o.atrasos = 0;
+    return { ok: true, txt: `${o.nome} pagou a dívida: M ${fmt(v)} entraram no caixa.` }; }
+  return { ok: false, pediuPrazo: true, txt: `${o.nome} disse que não consegue pagar agora e pediu prazo. Dá para negociar em parcelas ou tentar de novo depois do ${ctFech()}.` };
+}
+function negociarDivida(L, uid) {
+  const u = ctUnid(L, uid), o = u && u.ocup; if (!o || !(o.divida > 0)) return { ok: false, txt: "Não há dívida para negociar." };
+  if (o.parcela) return { ok: false, txt: "Já existe um acordo em andamento." };
+  const total = Math.round(o.divida * (1 - CT_CFG.descontoParc)), valor = Math.ceil(total / CT_CFG.parcelas);
+  o.parcela = { valor, resta: CT_CFG.parcelas, total }; o.divida = 0; o.atrasos = Math.max(0, o.atrasos - 1);
+  return { ok: true, txt: `Acordo fechado: ${o.nome} paga M ${fmt(total)} em ${CT_CFG.parcelas} parcelas de M ${fmt(valor)}, junto com o aluguel.` };
+}
+function mudarInquilino(L, uid, destino, cfg) {
+  const u = ctUnid(L, uid), o = u && u.ocup; if (!o) return { ok: false, txt: "Unidade vazia." };
+  const d = destinosMudanca(L, u, cfg).find(x => x.u.id === destino); if (!d) return { ok: false, txt: "Essa unidade não está disponível para esse ramo." };
+  if (d.maior && (o.atrasos > 0 || o.divida > 0)) return { ok: false, txt: `${o.nome} recusou: com dívida em aberto, não tem fôlego para uma loja maior. Resolva a dívida antes.` };
+  d.u.ocup = o; u.ocup = null; o.aluguel = d.aluguel;
+  L.propostas = L.propostas.filter(p => p.unidade !== d.u.id || p.renovacao);
+  L.propostas.forEach(p => { if (p.renovacao && p.unidade === u.id) p.unidade = d.u.id; });
+  return { ok: true, txt: `${o.nome} mudou para ${ctNomeU(d.u)} (${TAMANHOS[d.u.tam].nome.toLowerCase()}). Aluguel agora: M ${fmt(d.aluguel)} por ${ctPer(1)}. ${ctNomeU(u)} ficou vaga.` };
+}
+function prorrogarContrato(L, uid) {
+  const u = ctUnid(L, uid), o = u && u.ocup; if (!o) return { ok: false, txt: "Unidade vazia." };
+  if (o.atrasos >= 2) return { ok: false, txt: `Com ${o.atrasos} atrasos, resolva a dívida antes de prorrogar.` };
+  o.resta = Math.max(0, o.resta) + CT_CFG.prorroga; o.diasContrato = (o.diasContrato || 0) + CT_CFG.prorroga; o.aluguel = Math.round(o.aluguel * (1 + CT_CFG.aumentoProrroga));
+  L.propostas = L.propostas.filter(p => !(p.renovacao && p.unidade === u.id));
+  return { ok: true, txt: `Contrato de ${o.nome} prorrogado por mais ${CT_CFG.prorroga} ${ctPer(CT_CFG.prorroga)}, com aluguel de M ${fmt(o.aluguel)}.` };
+}
+function encerrarContrato(L, uid) {
+  const u = ctUnid(L, uid), o = u && u.ocup; if (!o) return { ok: false, txt: "Unidade vazia." };
+  const m = multaEncerrar(o);
+  if (S.money < m.liquida || S.money < 0) return { ok: false, txt: `Falta dinheiro: a multa é M ${fmt(m.liquida)} e o caixa tem M ${fmt(S.money)}.` };
+  S.money -= m.liquida; S.today.outrasDesp = (S.today.outrasDesp || 0) + m.liquida;
+  u.ocup = null; L.propostas = L.propostas.filter(p => p.unidade !== u.id);
+  return { ok: true, txt: `Contrato de ${o.nome} encerrado. Multa paga: M ${fmt(m.liquida)}${o.divida > 0 ? ` (a dívida de M ${fmt(o.divida)} foi abatida)` : ""}. ${ctNomeU(u)} está livre para outra proposta.` };
+}
+// ---------- ficha do contrato ----------
+function abrirContrato(L, uid, cfg, aviso) {
+  const u = ctUnid(L, uid), o = u && u.ocup; if (!o) { hideModal(); return; }
+  const R = RAMOS[o.ramo], risco = o.risco >= 0.06 ? "alto" : o.risco <= 0.015 ? "baixo (bom pagador)" : "médio", m = multaEncerrar(o), dest = destinosMudanca(L, u, cfg);
+  const per = ctPer(1), refresh = () => { save(); lastSig = ""; if (typeof renderSheet === "function") renderSheet(); };
+  const feito = r => { if (r.ok) { refresh(); anunciar(r.txt); } abrirContrato(L, uid, cfg, r); };
+  showModal(`<h2>${R.ic} ${o.nome}</h2><p class="note" style="margin-top:-4px">${R.nome} · ${ctNomeU(u)} (${TAMANHOS[u.tam].nome.toLowerCase()})</p>
+    ${aviso ? `<div class="${aviso.ok ? "card" : "warn"}" role="status">${aviso.txt}</div>` : ""}
+    <table class="rep">
+      <tr><td>Aluguel</td><td>M ${fmt(o.aluguel)} por ${per}${o.pct ? ` + ${Math.round(o.pct * 100)}% das vendas` : ""}</td></tr>
+      ${o.carencia > 0 ? `<tr><td>Carência</td><td>mais ${o.carencia} ${ctPer(o.carencia)} sem aluguel fixo</td></tr>` : ""}
+      <tr><td>Contrato</td><td>${o.resta > 0 ? `mais ${o.resta} ${ctPer(o.resta)}` : "vencido, esperando renovação"} (desde ${per} ${o.desde || "?"})</td></tr>
+      <tr><td>Já pagou</td><td>M ${fmt(o.pagoTot || 0)}${o.ultPago != null ? ` · no último fechamento: ${o.ultPago ? `M ${fmt(o.ultPago)}` : "não pagou"}` : ""}</td></tr>
+      ${o.pct && o.ultVendas != null ? `<tr><td>Vendas no último período</td><td>M ${fmt(o.ultVendas)}</td></tr>` : ""}
+      <tr><td>Dívida</td><td class="${o.divida > 0 ? "neg" : ""}">${o.divida > 0 ? `M ${fmt(o.divida)} · ${o.atrasos} atraso${o.atrasos === 1 ? "" : "s"}` : "nenhuma"}</td></tr>
+      ${o.parcela ? `<tr><td>Acordo</td><td>${o.parcela.resta} parcela(s) de M ${fmt(o.parcela.valor)}</td></tr>` : ""}
+      <tr><td>Risco de atraso</td><td>${risco}</td></tr>
+      <tr><td>Movimento que traz</td><td>+${Math.round(R.fluxo * 100)}%</td></tr>
+    </table>
+    ${o.divida > 0 ? `<h3 style="margin:10px 0 4px">Dívida</h3><div class="linha2">
+      <button class="btn mini" id="ctCobrar"${o.cobradoDia === S.day ? " disabled" : ""}>Cobrar M ${fmt(o.divida)}</button>
+      ${o.parcela ? "" : `<button class="plain mini" id="ctNeg"><span>Parcelar em ${CT_CFG.parcelas} com ${Math.round(CT_CFG.descontoParc * 100)}% de desconto</span></button>`}</div>
+      <p class="note">Cobrar dá certo ${Math.round(chanceCobranca(o) * 100)}% das vezes (uma tentativa por ${ctFech()}). O acordo é garantido, mas você recebe menos.</p>` : ""}
+    <h3 style="margin:10px 0 4px">Espaço</h3>
+    ${dest.length ? dest.map(d => `<button class="plain mini" data-mudar="${d.u.id}" style="width:100%"><span>Propor ${d.maior ? "loja maior" : "loja menor"}: ${ctNomeU(d.u)} (${TAMANHOS[d.u.tam].nome.toLowerCase()}), aluguel M ${fmt(d.aluguel)}</span></button>`).join("")
+      : `<p class="note">Nenhuma unidade vaga de outro tamanho onde ${R.nome.toLowerCase()} caiba agora.</p>`}
+    <h3 style="margin:10px 0 4px">Prazo</h3>
+    <button class="plain mini" id="ctProrr" style="width:100%"><span>Prorrogar por mais ${CT_CFG.prorroga} ${ctPer(CT_CFG.prorroga)} (aluguel M ${fmt(Math.round(o.aluguel * (1 + CT_CFG.aumentoProrroga)))})</span></button>
+    <button class="plain mini" id="ctEnc" style="width:100%"><span>Encerrar antes do prazo: multa de M ${fmt(m.liquida)}${o.divida > 0 ? ` (M ${fmt(m.bruta)} menos a dívida)` : ""}</span></button>
+    <p class="note">Encerrar libera a unidade para outra proposta, por exemplo para trazer uma âncora ou um ramo que falta.</p>
+    <button class="btn" id="ctFechar" style="margin-top:8px">Fechar</button>`);
+  const $c = k => document.getElementById(k);
+  if ($c("ctCobrar")) $c("ctCobrar").onclick = () => feito(cobrarDivida(L, uid));
+  if ($c("ctNeg")) $c("ctNeg").onclick = () => feito(negociarDivida(L, uid));
+  document.querySelectorAll("#dialog [data-mudar]").forEach(b => b.onclick = () => { const r = mudarInquilino(L, uid, b.dataset.mudar, cfg); if (r.ok) { refresh(); anunciar(r.txt); hideModal(); toast(r.txt); } else abrirContrato(L, uid, cfg, r); });
+  $c("ctProrr").onclick = () => feito(prorrogarContrato(L, uid));
+  const be = $c("ctEnc"); be.onclick = () => {
+    if (!be.dataset.armado) { be.dataset.armado = 1; be.querySelector("span").textContent = `Toque de novo para pagar M ${fmt(m.liquida)} e encerrar`; return; }
+    const r = encerrarContrato(L, uid); if (r.ok) { refresh(); anunciar(r.txt); hideModal(); banner(`📄 Contrato de ${o.nome} encerrado`, "#b7773b"); toast(r.txt); } else abrirContrato(L, uid, cfg, r); };
+  $c("ctFechar").onclick = hideModal;
 }
 </script>
 <script>
@@ -6906,8 +7070,8 @@ function actions() {
         run: () => { st.open = true; st.shelf = 2; st.wh = 4; banner(`${d.ic} ${d.name} aberto!`, d.color); confetti(); } });
       return;
     }
-    list.push({ key: `shelf:${d.id}`, sec: i, kind: "shelf", title: "Prateleira", info: `${shelfCap(st.shelfLvl)} → ${shelfCap(st.shelfLvl + 1)} itens`,
-      cost: Math.ceil(d.base * Math.pow(G, st.shelfLvl)), run: () => st.shelfLvl++ });
+    list.push({ key: `shelf:${d.id}`, sec: i, kind: "shelf", title: "Prateleira", info: st.shelfLvl >= MAX_PRATELEIRA ? `${shelfCap(st.shelfLvl)} itens: tamanho máximo da gôndola` : `${shelfCap(st.shelfLvl)} → ${shelfCap(st.shelfLvl + 1)} itens`,
+      cost: Math.ceil(d.base * Math.pow(G, st.shelfLvl)), maxed: st.shelfLvl >= MAX_PRATELEIRA, run: () => st.shelfLvl++ });
     list.push({ key: `price:${d.id}`, sec: i, kind: "price", title: "Qualidade", info: `M ${fmt(secPrice(d, st.priceLvl))} → M ${fmt(secPrice(d, st.priceLvl + 1))}`,
       cost: Math.ceil(d.base * 2 * Math.pow(1.45, st.priceLvl)), run: () => st.priceLvl++ });
     list.push({ key: `hire:${d.id}`, sec: i, kind: "hire", title: "Contratar", info: st.staff >= MAX_STAFF ? `Equipe completa (${st.staff})` : `Repositores ${st.staff} → ${st.staff + 1}`,
@@ -7267,7 +7431,10 @@ function buildBuilding(body, acts) {
       if (st.wh > 0 && st.shelf < shelfCap(st.shelfLvl)) {
         markPop(sel.i, st.shelf, st.shelf + 1); st.wh--; st.shelf++; S.stats.hand++; taskProgress("hand", 1);
         float(SHELVES[sel.i].cx, SHELVES[sel.i].y - 2, "+1", "#6b4f2f"); hb.classList.remove("pop"); void hb.offsetWidth; hb.classList.add("pop");
-      } else { toast(st.wh === 0 ? `Sem ${d.name} no depósito. Melhore o depósito ou espere o caminhão.` : "A prateleira já está cheia."); hb.classList.remove("shake"); void hb.offsetWidth; hb.classList.add("shake"); }
+      } else {          // 1.6: o aviso sai uma vez por dia e por setor; toques seguidos só balançam o botão
+        if (st.wh === 0) toastOnce(`semEstoque:${d.id}`, `Sem ${d.name} no depósito. Melhore o depósito ou espere o caminhão.`);
+        else toastOnce(`cheia:${d.id}`, st.shelfLvl < MAX_PRATELEIRA ? `A prateleira de ${d.name} já está cheia: só cabe mais quando os clientes levarem. Para caber mais, use "Prateleira" em Melhorias.` : `A prateleira de ${d.name} já está cheia e no tamanho máximo.`);
+        hb.classList.remove("shake"); void hb.offsetWidth; hb.classList.add("shake"); }
     };
     live(() => { const ok = st.wh > 0 && st.shelf < shelfCap(st.shelfLvl); hb.classList.toggle("can", ok);
       hb.querySelector("span").textContent = ok ? "Leva 1 item do depósito para a prateleira" : st.wh === 0 ? "Depósito sem estoque deste setor" : "Prateleira cheia"; });
@@ -7311,7 +7478,7 @@ function buildBuilding(body, acts) {
     openSectors().forEach(d => per.appendChild(stat(`${d.ic} ${d.name}`, () => `${S.sec[d.id].wh} un.`)));
     body.appendChild(el("div", "sec-title", "Estoque por setor")); body.appendChild(per);
     if (fornAtivo()) {
-      body.appendChild(el("p", "note", `Reservadas para pedidos a caminho: ${reservado()} caixas. A reposição automática só mantém até ${FORN_CFG.emergencia} caixas por setor e custa ${Math.round((FORN_CFG.fatorAuto - 1) * 100)}% a mais.`));
+      body.appendChild(el("p", "note", `Reservadas para pedidos a caminho: ${reservado()} caixas. ${fornCompleto() ? `A reposição automática só mantém até ${FORN_CFG.emergencia} caixas por setor e custa ${Math.round((FORN_CFG.fatorAuto - 1) * 100)}% a mais.` : "O caminhão automático completa o resto pelo preço normal; na Serra sai 25% mais barato."}`));
       const bf = el("button", "btn", "Negociar com fornecedores"); bf.onclick = () => openSheet("forn"); body.appendChild(bf);
     } else body.appendChild(el("p", "note", "O fornecedor cobra cada caixa entregue. Sem dinheiro, o caminhão não descarrega."));
     body.appendChild(actsBox(acts, ["storage"]));
@@ -7620,6 +7787,25 @@ function renderMission() {
   $("mission").classList.toggle("done", !!m.done);
   if (m.title !== missionKey) { missionKey = m.title; const e = $("mission"); e.animate && e.animate([{ transform: "scale(.96)" }, { transform: "scale(1)" }], { duration: 220, easing: "ease-out" }); }
 }
+
+// ---------- 1.6: proteção contra toque duplo em compras ----------
+// Depois de um toque que gastou dinheiro, o painel se redesenha e o próximo nível aparece no mesmo lugar.
+// Um toque duplo rápido comprava os dois (ex.: balcão de M 600 e logo o de M 1.400). Agora, por 0,6 s
+// depois de uma compra, outro toque em botão do painel ou de um aviso é ignorado.
+const TOQUE_DUPLO_MS = 600;
+let ultimaCompraToque = -1e9, dinheiroAntesToque = null;
+["sheet", "modal"].forEach(id => {
+  const raiz = document.getElementById(id); if (!raiz) return;
+  raiz.addEventListener("click", ev => {
+    const b = ev.target.closest && ev.target.closest("button"); if (!b) return;
+    const fechar = b.id === "shClose" || /^(Fechar|Entendi|Voltar|Cancelar|OK)$/i.test((b.textContent || "").trim());
+    if (performance.now() - ultimaCompraToque < TOQUE_DUPLO_MS && !fechar) { ev.stopImmediatePropagation(); ev.preventDefault(); return; }
+    dinheiroAntesToque = S.money;
+  }, true);
+  const conferir = () => { if (dinheiroAntesToque != null && S.money < dinheiroAntesToque - 1e-9) ultimaCompraToque = performance.now(); dinheiroAntesToque = null; };
+  raiz.addEventListener("click", conferir);                 // mesmo toque, depois do botão agir
+  raiz.addEventListener("click", () => setTimeout(conferir, 0), true);   // caso o botão pare a propagação
+});
 </script>
 <script>
 "use strict";
@@ -8025,7 +8211,7 @@ function resumoOperacao(t, o) {
 //   · Painel de trapaças (modo desenvolvedor): 7 toques na versão nas Configurações + código.
 //     Todo uso fica marcado no save (S.trapacas / CARREIRA.trapacas).
 // =====================================================================
-const APP_VERSAO = "1.5";
+const APP_VERSAO = "1.6";
 const SITE_JOGO = "https://danielcamposdasilva-tech.github.io/mercadinho/";
 const WHATS_SUPORTE = "5521988612660";
 const DEV_HASH = 1898547767;                  // código do modo desenvolvedor (só o hash fica no jogo)
@@ -8039,7 +8225,10 @@ function abrirExterno(url) { if (ehNativo()) location.href = url; else window.op
 
 // ---------- últimos acontecimentos (avisos e faixas mostrados ao jogador) ----------
 const ACONTECIMENTOS = [];
-function regAcontecimento(txt) { if (!txt) return; ACONTECIMENTOS.push(`d${typeof S !== "undefined" && S ? S.day : "?"} ${String(txt).replace(/<[^>]+>/g, "").slice(0, 90)}`); if (ACONTECIMENTOS.length > 12) ACONTECIMENTOS.shift(); }
+function regAcontecimento(txt) { if (!txt) return;
+  const linha = `d${typeof S !== "undefined" && S ? S.day : "?"} ${String(txt).replace(/<[^>]+>/g, "").slice(0, 90)}`, ult = ACONTECIMENTOS[ACONTECIMENTOS.length - 1];
+  if (ult && ult.replace(/ \(×\d+\)$/, "") === linha) { const n = +((/ \(×(\d+)\)$/.exec(ult) || [])[1] || 1) + 1; ACONTECIMENTOS[ACONTECIMENTOS.length - 1] = `${linha} (×${n})`; return; }     // repetido em seguida: conta, não ocupa outra linha
+  ACONTECIMENTOS.push(linha); if (ACONTECIMENTOS.length > 12) ACONTECIMENTOS.shift(); }
 // toast é declarado em 13-hud-loop (carregado depois): o embrulho é feito quando todos os scripts já rodaram
 setTimeout(() => { if (typeof toast !== "function" || typeof banner !== "function") return; const t0 = toast, b0 = banner;
   toast = msg => { regAcontecimento(msg); return t0(msg); };
@@ -8083,7 +8272,12 @@ function abrirRelato() {
   const $r = k => document.getElementById(k), txt = () => textoRelato($r("rlDesc").value, $r("rlDiag").checked, $r("rlAc").checked, id);
   const atualizar = () => { $r("rlPrev").textContent = txt(); };
   ["rlDesc", "rlDiag", "rlAc"].forEach(k => $r(k).addEventListener("input", atualizar)); ["rlDiag", "rlAc"].forEach(k => $r(k).addEventListener("change", atualizar)); atualizar();
-  $r("rlEnviar").onclick = () => { if (typeof regDiag === "function") regDiag("relato", { codigo: id, texto: txt() }, 2); abrirExterno(`https://wa.me/${WHATS_SUPORTE}?text=${encodeURIComponent(txt())}`); hideModal(); toast(`Relato ${id} pronto no WhatsApp.`); };
+  $r("rlEnviar").onclick = () => {
+    if (!$r("rlDesc").value.trim() && !$r("rlEnviar").dataset.semTexto) {      // 1.6: relato vazio não ajuda; pede uma linha (segundo toque envia assim mesmo)
+      $r("rlEnviar").dataset.semTexto = 1; $r("rlEnviar").textContent = "Enviar sem descrição";
+      const w = document.createElement("div"); w.className = "warn"; w.setAttribute("role", "alert"); w.textContent = "Escreva em uma linha o que aconteceu ou o que você esperava. Sem isso fica difícil achar o problema.";
+      $r("rlDesc").after(w); $r("rlDesc").focus(); return; }
+    if (typeof regDiag === "function") regDiag("relato", { codigo: id, texto: txt() }, 2); abrirExterno(`https://wa.me/${WHATS_SUPORTE}?text=${encodeURIComponent(txt())}`); hideModal(); toast(`Relato ${id} pronto no WhatsApp.`); };
   $r("rlCopiar").onclick = async () => { try { await navigator.clipboard.writeText(txt()); toast("Texto copiado."); } catch (e) { const r = document.createRange(); r.selectNodeContents($r("rlPrev")); const s = getSelection(); s.removeAllRanges(); s.addRange(r); toast("Texto selecionado: copie com o menu do aparelho."); } };
   $r("rlFechar").onclick = hideModal;
   setTimeout(() => { const d = $r("rlDesc"); if (d) d.focus(); }, 60);
@@ -8454,6 +8648,195 @@ if (MODO === "menu") setTimeout(avisoDiag, 300);
 <script>
 "use strict";
 // =====================================================================
+// 1.6: backup da partida. Gera um código (texto) com o Meu Mercado e a carreira inteira, para guardar
+// ou levar para outro aparelho (Android ↔ iPhone). Importar mostra o que tem no código e só substitui
+// depois de confirmar; antes, o que estava no aparelho fica guardado numa cópia local.
+// Formato: MERCADINHO.<v>.<z|j>.<soma>.<base64>  (z = JSON comprimido com gzip, j = JSON puro)
+// =====================================================================
+const BK_PREFIXO = "MERCADINHO", BK_VERSAO = 1, CHAVE_COPIA_IMPORTAR = "mercadinho-copia-antes-importar";
+const bkSoma = s => { let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; } return h.toString(16).padStart(8, "0"); };
+const bkB64 = u8 => { let s = ""; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(s); };
+const bkDeB64 = b => { const s = atob(b), u8 = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) u8[i] = s.charCodeAt(i); return u8; };
+async function bkTransformar(u8, Stream, modo) { const r = new Blob([u8]).stream().pipeThrough(new Stream(modo)); return new Uint8Array(await new Response(r).arrayBuffer()); }
+function bkDados() {
+  try { if (typeof save === "function" && MODO !== "menu") save(); } catch (e) {}
+  const d = { app: "mercadinho", versao: APP_VERSAO, feito: Date.now(), plataforma: typeof plataforma === "function" ? plataforma() : "" };
+  try { const l = localStorage.getItem(CHAVE_LIVRE); if (l) d.livre = JSON.parse(l); } catch (e) {}
+  try { const c = localStorage.getItem(CHAVE_CARREIRA); if (c) d.carreira = JSON.parse(c); } catch (e) {}
+  return d;
+}
+async function gerarCodigo(dados) {
+  const json = JSON.stringify(dados || bkDados()), soma = bkSoma(json), u8 = new TextEncoder().encode(json);
+  let tipo = "j", corpo = u8;
+  if (typeof CompressionStream === "function") { try { corpo = await bkTransformar(u8, CompressionStream, "gzip"); tipo = "z"; } catch (e) { corpo = u8; tipo = "j"; } }
+  return `${BK_PREFIXO}.${BK_VERSAO}.${tipo}.${soma}.${bkB64(corpo)}`;
+}
+// devolve { ok, dados } ou { ok: false, erro }
+async function lerCodigo(txt) {
+  const t = String(txt || "").replace(/\s+/g, "");
+  const m = /^MERCADINHO\.(\d+)\.([zj])\.([0-9a-f]{8})\.([A-Za-z0-9+/=]+)$/.exec(t);
+  if (!m) return { ok: false, erro: t ? "Isso não parece um código de backup do Mercadinho. Copie o código inteiro, do MERCADINHO até o fim." : "Cole o código ou escolha o arquivo do backup." };
+  if (+m[1] > BK_VERSAO) return { ok: false, erro: "Este código foi feito numa versão mais nova do jogo. Atualize o jogo neste aparelho e tente de novo." };
+  let u8; try { u8 = bkDeB64(m[4]); } catch (e) { return { ok: false, erro: "O código está incompleto ou foi alterado. Copie de novo, inteiro." }; }
+  if (m[2] === "z") {
+    if (typeof DecompressionStream !== "function") return { ok: false, erro: "Este aparelho não consegue abrir o código comprimido. Atualize o navegador ou o sistema e tente de novo." };
+    try { u8 = await bkTransformar(u8, DecompressionStream, "gzip"); } catch (e) { return { ok: false, erro: "O código está incompleto ou foi alterado. Copie de novo, inteiro." }; }
+  }
+  const json = new TextDecoder().decode(u8);
+  if (bkSoma(json) !== m[3]) return { ok: false, erro: "O código está incompleto ou foi alterado (a conferência não bateu). Copie de novo, inteiro." };
+  let d; try { d = JSON.parse(json); } catch (e) { return { ok: false, erro: "O código está danificado." }; }
+  if (!d || d.app !== "mercadinho" || (!d.livre && !d.carreira)) return { ok: false, erro: "O código não tem nenhuma partida." };
+  if (d.carreira && !migrarCarreira(JSON.parse(JSON.stringify(d.carreira)), false)) return { ok: false, erro: "A carreira dentro do código está danificada." };
+  return { ok: true, dados: d };
+}
+function resumoBackup(d) {
+  const out = [];
+  if (d.livre) { const t = TIERS[d.livre.tier || 0] || TIERS[0]; out.push(`Meu Mercado: dia ${d.livre.day || 1}, ${t.name}, M ${fmt(d.livre.money || 0)}`); }
+  if (d.carreira) { const c = migrarCarreira(JSON.parse(JSON.stringify(d.carreira)), false), f = c && FASE_CFG[c.fase];
+    const n = c ? Object.values(c.fases || {}).filter(x => x && x.concluida).length : 0;
+    out.push(f ? `Carreira: capítulo ${f.capitulo} (${f.titulo}), ${n} capítulo${n === 1 ? "" : "s"} concluído${n === 1 ? "" : "s"}` : "Carreira"); }
+  return out;
+}
+function importarBackup(d) {
+  try {
+    const antes = { livre: localStorage.getItem(CHAVE_LIVRE), carreira: localStorage.getItem(CHAVE_CARREIRA), em: Date.now() };
+    localStorage.setItem(CHAVE_COPIA_IMPORTAR, JSON.stringify(antes));
+    if (d.livre) localStorage.setItem(CHAVE_LIVRE, JSON.stringify(d.livre));
+    if (d.carreira) localStorage.setItem(CHAVE_CARREIRA, JSON.stringify(d.carreira));
+  } catch (e) { toast("Não deu para gravar neste aparelho (sem espaço?). Nada foi alterado."); return false; }
+  window.__semSalvar = true;                             // a partida aberta na tela não sobrescreve o que foi importado
+  try { sessionStorage.removeItem(CHAVE_SESSAO); } catch (e) {}
+  return true;
+}
+// ---------- tela ----------
+function abrirBackup() {
+  if (typeof closeSheet === "function") closeSheet();
+  const web = !ehNativo();
+  showModal(`<h2>💾 Backup da partida</h2>
+    <p>Guarde um código com o seu progresso (Meu Mercado e carreira) ou leve a partida para outro aparelho, até de Android para iPhone.</p>
+    <h3 style="margin:10px 0 4px">Guardar</h3>
+    <div class="linha2"><button class="btn" id="bkCopiar">Copiar código</button>${navigator.share ? '<button class="plain" id="bkComp"><span>Compartilhar</span></button>' : ""}${web ? '<button class="plain" id="bkArq"><span>Salvar arquivo</span></button>' : ""}</div>
+    <p class="note" id="bkInfo" aria-live="polite">Mande o código para você mesmo (WhatsApp, e-mail ou notas). Quem tiver o código tem a sua partida.</p>
+    <h3 style="margin:10px 0 4px">Trazer de outro aparelho</h3>
+    <label for="bkCola">Cole o código aqui</label>
+    <textarea id="bkCola" rows="3" style="width:100%;box-sizing:border-box;font:inherit;font-size:12px;padding:8px;border-radius:10px;border:1px solid #9aa" placeholder="MERCADINHO.1..." autocomplete="off" autocapitalize="off" spellcheck="false"></textarea>
+    <div class="linha2"><button class="plain" id="bkLer"><span>Conferir o código</span></button><label class="plain" style="cursor:pointer"><input type="file" id="bkArqIn" accept=".txt,text/plain" style="position:absolute;opacity:0;width:1px;height:1px"><span>Escolher arquivo</span></label></div>
+    <div id="bkRes" aria-live="polite"></div>
+    <button class="plain" id="bkFechar" style="margin-top:8px;width:100%;justify-content:center"><span>Fechar</span></button>`);
+  const $b = k => document.getElementById(k), info = $b("bkInfo");
+  let codigo = null; const pegar = async () => codigo || (codigo = await gerarCodigo());
+  $b("bkCopiar").onclick = async () => { const c = await pegar();
+    try { await navigator.clipboard.writeText(c); info.textContent = `Código copiado (${Math.ceil(c.length / 1024)} KB de texto). Cole numa conversa com você mesmo para guardar.`; toast("Código do backup copiado."); }
+    catch (e) { $b("bkCola").value = c; $b("bkCola").select(); info.textContent = "Não deu para copiar sozinho: o código está selecionado na caixa abaixo. Copie com o menu do aparelho."; } };
+  const bc = $b("bkComp"); if (bc) bc.onclick = async () => { const c = await pegar(); try { await navigator.share({ title: "Backup do Mercadinho da Esquina", text: c }); } catch (e) {} };
+  const ba = $b("bkArq"); if (ba) ba.onclick = async () => { const c = await pegar(), a = document.createElement("a"), d = new Date();
+    a.href = URL.createObjectURL(new Blob([c], { type: "text/plain" })); a.download = `mercadinho-backup-${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}.txt`;
+    document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000); info.textContent = "Arquivo salvo na pasta de downloads."; };
+  const conferir = async txt => {
+    const r = await lerCodigo(txt), res = $b("bkRes"); if (!res) return;
+    if (!r.ok) { res.innerHTML = `<div class="warn" role="alert">${r.erro}</div>`; return; }
+    const quando = r.dados.feito ? new Date(r.dados.feito).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" }) : "?";
+    res.innerHTML = `<div class="card"><p><b>Código conferido.</b> Feito em ${quando}${r.dados.versao ? `, versão ${r.dados.versao}` : ""}.</p><ul class="metas">${resumoBackup(r.dados).map(x => `<li>${x}</li>`).join("")}</ul>
+      <p class="note">Isso substitui ${r.dados.livre && r.dados.carreira ? "o Meu Mercado e a carreira" : r.dados.livre ? "o Meu Mercado (a carreira fica como está)" : "a carreira (o Meu Mercado fica como está)"} deste aparelho. O que está aqui agora fica guardado numa cópia.</p>
+      <button class="btn danger-btn" id="bkImp">Substituir pela partida do código</button></div>`;
+    const bi = $b("bkImp"); bi.onclick = () => {
+      if (!bi.dataset.armado) { bi.dataset.armado = 1; bi.textContent = "Toque de novo para confirmar"; return; }
+      if (importarBackup(r.dados)) { hideModal(); toast("Partida importada. Abrindo o menu…"); setTimeout(() => { paused = true; location.reload(); }, 600); }
+    };
+  };
+  $b("bkLer").onclick = () => conferir($b("bkCola").value);
+  $b("bkCola").addEventListener("paste", () => setTimeout(() => conferir($b("bkCola").value), 30));
+  $b("bkArqIn").onchange = e => { const f = e.target.files && e.target.files[0]; if (!f) return; f.text().then(t => { $b("bkCola").value = t.trim(); conferir(t); }); };
+  $b("bkFechar").onclick = hideModal;
+}
+// entradas: nas Configurações (dentro do jogo) e no menu inicial
+{ const b0 = buildSettings;
+  buildSettings = body => {
+    b0(body);
+    const b = el("button", "plain", `<span>💾 Backup da partida (levar para outro aparelho)</span>`); b.onclick = abrirBackup;
+    body.insertBefore(b, body.querySelector(".danger") ? body.querySelector(".danger").previousSibling : null);
+  }; }
+{ const m0 = mostrarMenu;
+  mostrarMenu = function () {
+    m0();
+    const box = document.querySelector("#menu .menu-box"); if (!box) return;
+    const b = el("button", "plain mini menu-backup", `<span>💾 Backup da partida: guardar ou trazer de outro aparelho</span>`); b.onclick = abrirBackup;
+    box.insertBefore(b, box.querySelector(".menu-nota"));
+  }; }
+</script>
+<script>
+"use strict";
+// =====================================================================
+// 1.6: tocar nas estrelas (reputação) explica de onde vem a nota e o que fazer para melhorar.
+// - Mercados (Livre e capítulos 1 a 6): cada mudança de reputação guarda o motivo no dia (changeRep com causa,
+//   em S.today.repCausas). A tela mostra hoje e ontem, do que mais tirou para o que mais deu, com uma dica.
+// - Shopping (capítulos 7 e 8): as estrelas são a satisfação dos visitantes; a tela mostra cada parcela.
+// =====================================================================
+const REP_CAUSAS = {
+  fila: { nome: "Clientes desistiram da fila do caixa", dica: "Contrate ou treine operadores de caixa; no capítulo 4, ponha volantes no caixa no pico." },
+  gondola: { nome: "Clientes não acharam o produto na gôndola", dica: "Contrate ou treine repositores, aumente a prateleira e mantenha o depósito abastecido." },
+  nada: { nome: "Clientes saíram sem achar nada", dica: "Gôndolas vazias: reponha (repositores, depósito, pedidos) e abra mais setores." },
+  cesta: { nome: "Clientes saíram por falta de cesta ou carrinho", dica: "Compre mais cestas e carrinhos, contrate carrinheiros ou toque nas cestas acumuladas no caixa." },
+  irritado: { nome: "Clientes saíram irritados", dica: "Veja o relatório do dia para saber onde a loja travou." },
+  estacionamento: { nome: "Carros desistiram do estacionamento", dica: "Compre mais vagas; se houver vagas livres e fila na cancela, contrate ou treine atendentes." },
+  lotacao: { nome: "Visitantes recusados por lotação", dica: "Aumente a capacidade com limpeza e segurança." },
+  entregaCancelada: { nome: "Entregas canceladas", dica: "Aceite só o que o estoque e os motoboys dão conta; ajuste capacidade e raio." },
+  entregaAtrasada: { nome: "Entregas atrasadas", dica: "Mais motoboys, separação no turno e raio menor." },
+  entregaParcial: { nome: "Entregas enviadas sem tudo", dica: "Mantenha estoque para os pedidos aceitos." },
+  comerciante: { nome: "Comerciantes foram embora sem comprar", dica: "Posições de palete abastecidas e balcão do atacado sem fila." },
+  manobra: { nome: "Manobra de empilhadeira no pico com cliente perto", dica: "Use a descida do alto preventiva (só fora do pico)." },
+  rapido: { nome: "Clientes atendidos rápido no caixa", dica: "" },
+  atendido: { nome: "Clientes atendidos (com espera)", dica: "Fila curta (menos de 5 s) rende mais que o dobro de estrelas por cliente." },
+  ajuda: { nome: "Clientes ajudados pela equipe", dica: "" },
+  entregaPrazo: { nome: "Entregas no prazo", dica: "" },
+  fardos: { nome: "Vendas de fardos no atacado", dica: "" },
+};
+const repTxt = v => (v >= 0 ? "+" : "−") + Math.abs(v).toFixed(2).replace(".", ",");
+const estrelasTxt = v => v.toFixed(1).replace(".", ",");
+function linhasCausas(rc) {
+  return Object.entries(rc || {}).filter(([, q]) => Math.abs(q.v) >= 0.005).sort((a, b) => a[1].v - b[1].v)
+    .map(([k, q]) => ({ k, v: q.v, n: q.n, nome: (REP_CAUSAS[k] || { nome: k }).nome, dica: (REP_CAUSAS[k] || {}).dica || "" }));
+}
+function tabelaCausas(lin) {
+  if (!lin.length) return `<p class="note">Nada mudou a reputação ainda.</p>`;
+  return `<table class="rep">${lin.map(l => `<tr><td>${l.nome} (${l.n})</td><td class="${l.v < 0 ? "neg" : "pos"}">${repTxt(l.v)}</td></tr>`).join("")}</table>`;
+}
+function abrirReputacao() {
+  if (typeof closeSheet === "function") closeSheet();
+  const metaTxt = NA_CARREIRA && CFG && CFG.dia && CFG.dia.repMin && !CFG.semGondolas ? `<p>Meta do capítulo: pelo menos <b>${estrelasTxt(CFG.dia.repMin)}</b> para o dia contar.</p>` : "";
+  if (typeof SH_ATIVO !== "undefined" && SH_ATIVO) {
+    const fs = fatoresSatisfacao(), sat = satisfacaoAgora(), s = sh();
+    const ruins = fs.filter(f => f.dica && f.v < f.max - 0.005).sort((a, b) => (a.v - a.max) - (b.v - b.max)).slice(0, 3);
+    showModal(`<h2>⭐ Reputação ${estrelasTxt(S.rep)}</h2>
+      <p>No shopping, as estrelas são a <b>satisfação dos visitantes</b> (agora ${Math.round(sat * 100)}%, a nota acompanha aos poucos). 5 estrelas = 100%.</p>
+      <table class="rep"><tr><td>Base</td><td>50%</td></tr>${fs.filter(f => f.v || f.max).map(f => `<tr><td>${f.nome}</td><td class="${f.v < 0 ? "neg" : f.v < f.max - 0.005 ? "" : "pos"}">${f.v >= 0 ? "+" : "−"}${Math.abs(Math.round(f.v * 100))}%${f.max > 0 ? ` de ${Math.round(f.max * 100)}%` : ""}</td></tr>`).join("")}</table>
+      <h3 style="margin:10px 0 4px">Para melhorar</h3>
+      ${ruins.length ? `<ul class="metas">${ruins.map(f => `<li>${f.dica}</li>`).join("")}</ul>` : `<p class="note">Tudo no melhor que dá agora. Mantenha limpeza, segurança e lojas ocupadas.</p>`}
+      ${s.hoje && s.hoje.recusados ? `<p class="note">Nesta semana, ${s.hoje.recusados} visitante(s) recusado(s) por lotação.</p>` : ""}
+      <button class="btn" id="repOk">Entendi</button>`);
+    document.getElementById("repOk").onclick = hideModal; return;
+  }
+  const hoje = linhasCausas(S.today && S.today.repCausas), ontem = linhasCausas(S.lastDay && S.lastDay.repCausas);
+  const piores = [...hoje, ...ontem].filter(l => l.v < 0 && l.dica).sort((a, b) => a.v - b.v).filter((l, i, a) => a.findIndex(x => x.k === l.k) === i).slice(0, 3);
+  showModal(`<h2>⭐ Reputação ${estrelasTxt(S.rep)}</h2>
+    <p>As estrelas sobem quando o cliente é bem atendido e caem quando ele desiste ou sai sem o que queria. Mais estrelas trazem mais clientes${NA_CARREIRA ? "" : " e liberam o próximo porte da loja"}.</p>
+    ${metaTxt}
+    <h3 style="margin:10px 0 4px">Hoje</h3>${tabelaCausas(hoje)}
+    ${S.lastDay ? `<h3 style="margin:10px 0 4px">Ontem (dia ${S.lastDay.day})</h3>${S.lastDay.repCausas ? tabelaCausas(ontem) : `<p class="note">Sem detalhes de ontem (o motivo passou a ser guardado na versão 1.6).</p>`}` : ""}
+    <h3 style="margin:10px 0 4px">Para melhorar</h3>
+    ${piores.length ? `<ul class="metas">${piores.map(l => `<li><b>${l.nome}:</b> ${l.dica}</li>`).join("")}</ul>` : `<p class="note">Nenhuma perda importante. Fila curta no caixa é o que mais rende estrelas.</p>`}
+    <button class="btn" id="repOk">Entendi</button>`);
+  document.getElementById("repOk").onclick = hideModal;
+}
+// o resumo de ontem guarda os motivos do dia que fechou
+{ const e0 = endDay;
+  endDay = function () { const rc = S.today && S.today.repCausas; const r = e0.apply(this, arguments); if (rc && S.lastDay) S.lastDay.repCausas = rc; return r; }; }
+// a estrela do topo é um botão (index.html)
+{ const b = document.getElementById("repChip"); if (b) b.onclick = abrirReputacao; }
+</script>
+<script>
+"use strict";
+// =====================================================================
 // HUD
 // =====================================================================
 function fmt(v) {
@@ -8571,6 +8954,22 @@ else {
   else if (!S.seenIntro) { S.seenIntro = true; showIntro(true); }
   else if (troca) resumoOperacao(troca, away && away.days > 0 ? away : null);
   else if (away && away.days > 0) welcomeBack(away);
+  if (NA_CARREIRA && S.avisoForn16) {          // 1.6: fornecedores chegaram aos capítulos 4 e 5 (partida em andamento)
+    delete S.avisoForn16;
+    const avisar = () => { showModal(`<h2>🚚 Novidade: fornecedores</h2><p>A Distribuidora Ligeira e o Atacado Serra, que você conheceu no Ipê, agora também atendem o ${CFG.titulo}.</p>
+      <p>O caminhão automático continua igual, pelo preço normal. Se quiser economizar, peça à Serra (25% mais barato, chega em 2 dias); a Ligeira traz um lote extra no mesmo dia.</p>
+      <p class="note">Fica no depósito e na aba Carreira, em "Negociar com fornecedores". Nada mudou nas metas do capítulo.</p>
+      <button class="btn" id="ok">Entendi</button>`); document.getElementById("ok").onclick = hideModal; };
+    if (document.getElementById("modal").hidden) avisar(); else filaModal.push(avisar);
+  }
+  if (NA_CARREIRA && S.avisoPal16) {           // 1.6: segunda distribuidora de paletes no atacarejo (partida em andamento)
+    delete S.avisoPal16;
+    const avisar = () => { showModal(`<h2>🚛 Novidade: duas distribuidoras</h2><p>Os paletes agora podem vir de duas distribuidoras. A <b>Distribuidora Ligeira</b> é a de sempre: 1 palete, preço cheio, chega em 14 s.</p>
+      <p>O <b>Atacado Serra</b> vende lote de 3 paletes do mesmo setor 15% mais barato, mas a carreta demora 60 s e o lote ocupa o porta-paletes desde o pedido.</p>
+      <p class="note">Escolha no painel do atacado, em "Comprar paletes". A compra automática continua na Ligeira até você trocar.</p>
+      <button class="btn" id="ok">Entendi</button>`); document.getElementById("ok").onclick = hideModal; };
+    if (document.getElementById("modal").hidden) avisar(); else filaModal.push(avisar);
+  }
   if (convNovo) { if (document.getElementById("modal").hidden) abrirMapa(conv); else filaModal.push(() => abrirMapa(conv)); }
   save();
 }
