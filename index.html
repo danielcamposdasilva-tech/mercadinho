@@ -12,7 +12,6 @@
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
 <link rel="icon" type="image/png" sizes="192x192" href="icone-192.png">
 <link rel="manifest" href="manifest.webmanifest">
-
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@600;700;800&family=Nunito:wght@500;700;800&display=swap">
 <style>
@@ -452,6 +451,11 @@
 // o jogo não fica pela metade. Recarrega sozinho até 2 vezes e depois oferece "Tentar de novo".
 window.__boot = { falhas: [], ok: false };
 addEventListener("error", function (e) { var t = e.target; if (t && t.tagName === "SCRIPT" && t.src) window.__boot.falhas.push(t.src.split("/").pop()); }, true);
+// 1.3: últimos erros de script, para o "Relatar problema" (só mensagem e local, nada digitado pelo jogador)
+window.__erros = [];
+function __regErro(m) { try { window.__erros.push({ t: Date.now(), m: String(m).slice(0, 180) }); if (window.__erros.length > 8) window.__erros.shift(); } catch (x) {} }
+addEventListener("error", function (e) { if (e.message) __regErro(e.message + " @ " + String(e.filename || "").split("/").pop() + ":" + e.lineno); });
+addEventListener("unhandledrejection", function (e) { __regErro("promessa: " + (e.reason && e.reason.message || e.reason)); });
 addEventListener("load", function () {
   if (window.__boot.ok) return;
   var n = 0; try { n = +(sessionStorage.getItem("mercadinho-recarga") || 0); } catch (e) {}
@@ -922,6 +926,7 @@ try {
 migrate();
 function save() {
   if (!SAVE_KEY) return;                               // menu: nada é salvo
+  if (window.__semSalvar) return;                      // trapaça "recomeçar capítulo": a loja apagada não volta
   S.lastSeen = Date.now();
   try {
     // carreira: grava só a loja aberta, e só se ela ainda é a loja ativa (uma troca já gravada não é desfeita)
@@ -2170,8 +2175,8 @@ const faseCompleta = () => NA_CARREIRA && faseReqs().every(r => r.have >= r.need
 const faseProgresso = () => { const r = faseReqs(); return r.length ? r.reduce((a, q) => a + Math.min(1, q.have / q.need), 0) / r.length : 0; };
 const nivelGestao = () => 1 + Math.floor((CARREIRA ? CARREIRA.xp : 0) / XP_POR_NIVEL);
 
-function concluirFase() {
-  if (!NA_CARREIRA || S.fase.concluida || (CARREIRA.fases[FASE] && CARREIRA.fases[FASE].concluida) || !faseCompleta()) return;   // nunca duas vezes, nunca sem as metas
+function concluirFase(forcar) {             // forcar: painel de trapaças (1.3)
+  if (!NA_CARREIRA || S.fase.concluida || (CARREIRA.fases[FASE] && CARREIRA.fases[FASE].concluida) || (!forcar && !faseCompleta())) return;   // nunca duas vezes, nunca sem as metas
   const ach = ACH.filter(a => S.ach[a.id]).map(a => ({ fase: FASE, id: a.id, label: a.label || a.id }));
   const xp = 100 + 25 * CFG.estrutura.length;
   S.fase.concluida = true; S.fase.diaConclusao = S.day;
@@ -3578,7 +3583,7 @@ const novoAtac = () => ({ nPos: 6, pos: Array.from({ length: 9 }, () => ({ sec: 
 const novoHojeAt = () => ({ fardos: 0, receita: 0, custo: 0, comerciantes: 0, perdidos: 0, multas: 0, multaValor: 0, paletes: 0 });
 function at() {
   if (!S.atac) S.atac = novoAtac();
-  const a = S.atac; a.dep = a.dep || {}; a.carretas = a.carretas || []; a.transito = a.transito || []; a.hoje = Object.assign(novoHojeAt(), a.hoje || {}); a.dias = a.dias || [];
+  const a = S.atac; a.dep = a.dep || {}; a.soltos = a.soltos || {}; a.carretas = a.carretas || []; a.transito = a.transito || []; a.hoje = Object.assign(novoHojeAt(), a.hoje || {}); a.dias = a.dias || [];
   while (a.pos.length < 9) a.pos.push({ sec: null, fardos: 0 });
   return a;
 }
@@ -3589,6 +3594,34 @@ const custoPalete = id => Math.round(AT_CFG.fardo * AT_CFG.palete * boxCost(secD
 const depCapAt = () => AT_CFG.depCap[at().depLvl];
 const depUsado = () => Object.values(at().dep).reduce((a, n) => a + n, 0);
 const paletesChegando = () => at().transito.reduce((a, p) => a + p.n, 0) + at().carretas.reduce((a, c) => a + c.restante, 0);
+const noCaminho = id => at().transito.reduce((s, p) => s + (p.itens[id] || 0), 0) + at().carretas.reduce((s, c) => s + (c.itens[id] || 0), 0);
+function guardarSoltos(a, sec, n) { a.soltos[sec] = (a.soltos[sec] || 0) + n; while (a.soltos[sec] >= AT_CFG.palete) { a.soltos[sec] -= AT_CFG.palete; a.dep[sec] = (a.dep[sec] || 0) + 1; } }
+function autoTxt() {
+  const a = at(), st = a.autoSt; if (!a.auto) return "desligada";
+  if (!st || st.tipo === "ok") return "ligada, estoque garantido";
+  if (st.tipo === "comprando") return `ligada, comprando ${nomeSetor(st.sec).toLowerCase()}`;
+  if (st.tipo === "cheio") return "ligada, mas o depósito de paletes está cheio";
+  return `ligada, esperando saldo (faltam M ${fmt(Math.max(1, st.falta))})`;
+}
+// por que uma posição está vazia: a causa real, não sempre "compre paletes"
+function causaVazia() {
+  const a = at(), vaz = a.pos.slice(0, a.nPos).filter(p => p.sec && !p.fardos);
+  if (!vaz.length) return null;
+  const salao = a.ops - a.opsDoca, sec = vaz.map(p => p.sec);
+  if (sec.some(id => (a.dep[id] || 0) > 0)) return salao > 0 ? { n: vaz.length, title: "Empilhadeira levando palete", sub: "A posição vazia já vai ser abastecida", aviso: false }
+    : { n: vaz.length, title: "Nenhuma empilhadeira no salão", sub: "Há paletes no depósito: passe um operador da doca para o salão", aviso: true };
+  if (sec.some(id => a.carretas.some(c => c.itens[id] > 0))) {
+    if (a.opsDoca === 0) return { n: vaz.length, title: "Carreta parada na doca", sub: "Ponha uma empilhadeira na doca para descarregar", aviso: true };
+    if (depUsado() >= depCapAt()) return { n: vaz.length, title: "Depósito de paletes cheio", sub: "A carreta espera espaço: amplie o porta-paletes ou libere posições", aviso: true };
+    return { n: vaz.length, title: "Carreta descarregando", sub: "O palete chega em instantes", aviso: false };
+  }
+  if (sec.some(id => a.transito.some(p => p.itens[id] > 0))) { const t = Math.max(0, Math.ceil(AT_CFG.chegada - Math.max(...a.transito.filter(p => sec.some(id => p.itens[id] > 0)).map(p => p.t))));
+    return { n: vaz.length, title: "Palete a caminho", sub: `Chega de carreta em cerca de ${t} s`, aviso: false }; }
+  if (a.auto && a.autoSt && a.autoSt.tipo === "saldo") return { n: vaz.length, title: "Compra automática sem saldo", sub: `Faltam M ${fmt(Math.max(1, a.autoSt.falta))} para o próximo palete`, aviso: true };
+  if (a.auto && a.autoSt && a.autoSt.tipo === "cheio") return { n: vaz.length, title: "Depósito de paletes cheio", sub: "A compra automática não tem onde guardar", aviso: true };
+  if (a.auto) return { n: vaz.length, title: "Compra automática pedindo", sub: "O pedido sai em instantes", aviso: false };
+  return { n: vaz.length, title: `${vaz.length} posição(ões) de palete sem estoque`, sub: "Compre paletes ou ligue a compra automática", aviso: true };
+}
 const salariosAtac = () => AT_ATIVO ? at().ops * AT_CFG.op.salario + at().balcao * AT_CFG.balcao.salario : 0;
 
 // ---------- geometria: faixa de paletes, balcão do atacado, docas e galeria ----------
@@ -3687,7 +3720,7 @@ function proximoComerciante(c, a) {
 }
 function sairComerciante(c, a, motivo) {
   if (motivo) { a.hoje.perdidos++; changeRep(-0.06); float(c.x, c.y - 18, motivo, "#c9513a");
-    c.plano.forEach(i => { if (i.got) { const k = a.pos.findIndex((p, j) => j < a.nPos && p.sec === i.sec); if (k >= 0) a.pos[k].fardos += i.got; else a.dep[i.sec] = (a.dep[i.sec] || 0) + Math.ceil(i.got / AT_CFG.palete); i.got = 0; } }); }   // devolve o que pegou
+    c.plano.forEach(i => { if (i.got) { const k = a.pos.findIndex((p, j) => j < a.nPos && p.sec === i.sec); if (k >= 0) a.pos[k].fardos += i.got; else guardarSoltos(a, i.sec, i.got); i.got = 0; } }); }   // devolve o que pegou
   c.estado = "saindo"; const cor = corredorPara(c.x, 0); c.path = [{ x: cor, y: c.y }, { x: cor, y: FZ + 10 }, { x: 12, y: FZ + 16 }, { x: -30, y: FZ + 16 }];
 }
 const filaAtac = () => comerciantes.filter(c => c.estado === "fila" || c.estado === "pagando").sort((x, y) => x.qAt - y.qAt);
@@ -3728,10 +3761,18 @@ function tickAtacado(dt) {
   const a = at();
   tickCarretas(dt, a); syncEmpilhadeiras(a); empilhadeiras.forEach(e => passoEmpilhadeira(e, dt, a)); tickComerciantes(dt, a);
   tickLocacao(galeria(), GAL_CFG, dt);
+  // fardos soltos (devolvidos) voltam para a posição vazia do mesmo setor
+  for (let k = 0; k < a.nPos; k++) { const p = a.pos[k]; if (p.sec && !p.fardos && !p.reservada && a.soltos[p.sec] > 0) { p.fardos = a.soltos[p.sec]; a.soltos[p.sec] = 0; } }
   if (a.auto) { tAutoPal += dt; if (tAutoPal > 2) { tAutoPal = 0;      // mantém 2 paletes por setor da faixa (depósito + caminho)
     const secs = [...new Set(a.pos.slice(0, a.nPos).map(p => p.sec).filter(Boolean))];
-    for (const id of secs) { const tem = (a.dep[id] || 0) + a.transito.reduce((s, p) => s + (p.itens[id] || 0), 0) + a.carretas.reduce((s, c) => s + (c.itens[id] || 0), 0);
-      if (tem < 2 && S.money - custoPalete(id) > bills() + 60) { comprarPaletes(id, 1, true); break; } } } }
+    let st = { tipo: "ok" };
+    for (const id of secs) { const tem = (a.dep[id] || 0) + noCaminho(id);
+      if (tem >= 2) continue;
+      const c = custoPalete(id), falta = c + bills() + 60 - S.money;
+      if (depUsado() + paletesChegando() + 1 > depCapAt()) { st = { tipo: "cheio", sec: id }; continue; }
+      if (falta >= 0) { if (st.tipo === "ok") st = { tipo: "saldo", sec: id, falta }; continue; }
+      comprarPaletes(id, 1, true); st = { tipo: "comprando", sec: id }; break; }
+    a.autoSt = st; } } else a.autoSt = null;
 }
 function fecharGaleria() {           // antes do fechamento: aluguéis e custos da galeria entram no resultado do dia
   const d = diaLocacao(galeria(), GAL_CFG);
@@ -3748,7 +3789,7 @@ function fimDoDiaAtacado(L) {
 function atribuirPosicao(k, d) {
   const a = at(), p = a.pos[k]; if (!p || k >= a.nPos) return;
   const opcoes = [null, ...openSectors().map(s => s.id)], i = opcoes.indexOf(p.sec), novo = opcoes[(i + d + opcoes.length) % opcoes.length];
-  if (p.fardos > 0 && p.sec) { a.dep[p.sec] = (a.dep[p.sec] || 0) + Math.ceil(p.fardos / AT_CFG.palete); p.fardos = 0; }   // palete volta inteiro para o depósito (arredonda: o operador reembala)
+  if (p.fardos > 0 && p.sec) { guardarSoltos(a, p.sec, p.fardos); p.fardos = 0; }   // 1.3: fardos voltam como fardos (antes arredondava para palete inteiro)
   p.sec = novo; anunciar(`Posição ${k + 1}: ${novo ? nomeSetor(novo) : "livre"}.`); save(); lastSig = ""; renderSheet();
 }
 function mudarOps(d) {
@@ -3844,9 +3885,9 @@ function buildAtacado(body) {
   // compra de paletes
   body.appendChild(el("div", "sec-title", "Comprar paletes"));
   const cc = el("div", "card");
-  const ab = el("button", "plain toggle", `<span>Compra automática (2 por setor da faixa): <b>${a.auto ? "ligada" : "desligada"}</b></span>`); ab.setAttribute("aria-pressed", String(a.auto)); ab.onclick = alternarAutoPal; cc.appendChild(ab);
+  const ab = el("button", "plain toggle", `<span>Compra automática (2 por setor da faixa): <b id="atAutoSt">${autoTxt()}</b></span>`); live(() => { const q = ab.querySelector("#atAutoSt"); if (q) q.textContent = autoTxt(); }); ab.setAttribute("aria-pressed", String(a.auto)); ab.onclick = alternarAutoPal; cc.appendChild(ab);
   const g = el("div", "linha2");
-  openSectors().forEach(d => { const b = el("button", "plain mini", `<span>${d.ic} ${d.name}: 1 palete M ${fmt(custoPalete(d.id))} · fardo M ${fmt(precoFardo(d.id))} · tem ${a.dep[d.id] || 0}</span>`); b.onclick = () => { comprarPaletes(d.id, 1); renderSheet(); }; g.appendChild(b); });
+  openSectors().forEach(d => { const b = el("button", "plain mini", `<span>${d.ic} ${d.name}: 1 palete M ${fmt(custoPalete(d.id))} · fardo M ${fmt(precoFardo(d.id))} · tem ${a.dep[d.id] || 0}${noCaminho(d.id) ? ` · ${noCaminho(d.id)} a caminho` : ""}</span>`); b.onclick = () => { comprarPaletes(d.id, 1); renderSheet(); }; g.appendChild(b); });
   cc.appendChild(g); cc.appendChild(el("p", "note", `Chega em ${AT_CFG.chegada} s de carreta. Carreta parada mais de ${AT_CFG.permanencia} s paga M ${AT_CFG.multa} de taxa de permanência.`));
   const cd = AT_CFG.depCusto[a.depLvl]; if (cd != null) { const b = el("button", "plain", `<span>Porta-paletes: ${depCapAt()} → ${AT_CFG.depCap[a.depLvl + 1]} lugares por M ${fmt(cd)}</span>`); b.onclick = () => ampliar("dep"); cc.appendChild(b); }
   body.appendChild(cc);
@@ -3869,8 +3910,8 @@ function buildGaleria(body) {
 }
 function cartaoAtacado() {
   const c = el("div", "card"); c.innerHTML = `<h3>📦 Atacado e 🏬 galeria</h3><p class="note" id="atRes"></p>`;
-  live(() => { const q = c.querySelector("#atRes"); if (!q) return; const a = at(), g = galeria(), vaz = a.pos.slice(0, a.nPos).filter(p => p.sec && !p.fardos).length;
-    q.innerHTML = `${a.hoje.fardos} fardos vendidos hoje${vaz ? ` · <span class="tag ruim">${vaz} posição(ões) vazia(s)</span>` : ""}${a.carretas.some(x => x.espera > AT_CFG.permanencia * 0.6) ? ' · <span class="tag aviso">carreta esperando</span>' : ""} · galeria ${ocupadas(g).length}/${g.unidades.length}${g.propostas.length ? ` · <b>${g.propostas.length} proposta(s)</b>` : ""}`; });
+  live(() => { const q = c.querySelector("#atRes"); if (!q) return; const a = at(), g = galeria(), cv = causaVazia();
+    q.innerHTML = `${a.hoje.fardos} fardos vendidos hoje${cv ? ` · <span class="tag ${cv.aviso ? "ruim" : "aviso"}">${cv.n} posição(ões) vazia(s): ${cv.title.toLowerCase()}</span>` : ""}${a.auto ? ` · compra automática ${autoTxt().replace(/^ligada, ?/, "")}` : ""}${a.carretas.some(x => x.espera > AT_CFG.permanencia * 0.6) ? ' · <span class="tag aviso">carreta esperando</span>' : ""} · galeria ${ocupadas(g).length}/${g.unidades.length}${g.propostas.length ? ` · <b>${g.propostas.length} proposta(s)</b>` : ""}`; });
   const g = el("div", "linha2"); const b1 = el("button", "btn", "Paletes e docas"); b1.onclick = () => openSheet("atacado"); const b2 = el("button", "btn", "Galeria"); b2.onclick = () => openSheet("galeria"); g.appendChild(b1); g.appendChild(b2); c.appendChild(g);
   return c;
 }
@@ -3917,8 +3958,8 @@ FASE_CFG.cajueiro = {
   missao() {
     const a = at(), g = galeria();
     if (g.propostas.length && ocupadas(g).length < 3) return { title: `${g.propostas.length} proposta(s) para a galeria`, sub: "Escolha os inquilinos das salas", p: ocupadas(g).length / 4, ring: "🏬", go: () => openSheet("galeria") };
-    const vaz = a.pos.slice(0, a.nPos).filter(p => p.sec && !p.fardos && !(a.dep[p.sec] > 0)).length;
-    if (vaz) return { title: `${vaz} posição(ões) de palete sem estoque`, sub: "Compre paletes ou ligue a compra automática", p: 0, ring: "📦", go: () => openSheet("atacado") };
+    const cv = causaVazia();
+    if (cv && cv.aviso) return { title: cv.title, sub: cv.sub, p: 0, ring: "📦", go: () => openSheet("atacado") };
     return null;
   },
   orcamento: 6000,
@@ -4219,7 +4260,7 @@ function mostrarRelatorioEvento(r) {
 function mudarEquipeSh(papel, d) {
   const s = sh(), C = SH_CFG[papel];
   if (d > 0) { if (s[papel] >= C.max) { toast(`No máximo ${C.max}.`); return; } if (!pagarContratacao(C.contratar, papel === "limpeza" ? "uma pessoa da limpeza" : "um segurança")) return; s[papel]++; taskProgress("upgrades", 1); }
-  else if (s[papel] > 1) s[papel]--;
+  else if (s[papel] > (FASE === "grande" && S.obra && S.obra.fase !== "operacao" ? 0 : 1)) s[papel]--;     // antes de abrir o Grande dá para dispensar todos
   anunciar(`Capacidade agora: ${capacidade()} pessoas.`); save(); lastSig = ""; renderSheet();
 }
 function mudarManut(d) { const s = sh(); s.manut = Math.max(0, Math.min(2, s.manut + d)); anunciar(`Manutenção ${SH_CFG.manutencao[s.manut].nome.toLowerCase()}: M ${SH_CFG.manutencao[s.manut].custo} por semana.`); save(); lastSig = ""; renderSheet(); }
@@ -4535,10 +4576,14 @@ const OB_CFG = {
     { id: "escola", nome: "Banda da escola municipal", custo: 250, publico: 35, sat: 0.04 },
   ],
   preLocacao: 0.6, equipe: 6,
+  // 1.3: obra parada não paga diária (só a guarda do canteiro); chuva paga meia diária; cada contrato de
+  // pré-locação assinado paga um sinal de uma semana de aluguel; resgate de partidas presas de versões anteriores
+  guarda: 40, chuvaDiaria: 0.5, sinalSemanas: 1, resgateMargem: 0.1, resgateMin: 500,
 };
 const OB_ATIVO = NA_CARREIRA && FASE === "grande";
-const novaObra = () => ({ fase: "licencas", lic: {}, compromissos: {}, apoio: 0.4, pct: 0, turmas: 1, guindaste: false, lona: false, chuva: 0, embargo: false, divulgacao: 0, convidados: {}, inauguracao: null, relInaug: null, gasto: 0, hoje: { material: 0 } });
-function ob() { if (!S.obra) S.obra = novaObra(); const o = S.obra; o.lic = o.lic || {}; o.compromissos = o.compromissos || {}; o.convidados = o.convidados || {}; o.hoje = o.hoje || { material: 0 }; return o; }
+const novaObra = () => ({ fase: "licencas", lic: {}, compromissos: {}, apoio: 0.4, pct: 0, turmas: 1, guindaste: false, lona: false, chuva: 0, embargo: false, divulgacao: 0, convidados: {}, inauguracao: null, relInaug: null, gasto: 0, hoje: novoHojeOb(), pausada: false, usarReserva: false, sinais: 0, v13: true });
+const novoHojeOb = () => ({ material: 0, tAtiva: 0, tChuva: 0, tParada: 0 });
+function ob() { if (!S.obra) S.obra = novaObra(); const o = S.obra; o.lic = o.lic || {}; o.compromissos = o.compromissos || {}; o.convidados = o.convidados || {}; o.hoje = Object.assign(novoHojeOb(), o.hoje || {}); o.sinais = o.sinais || 0; return o; }
 const operando = () => ob().fase === "operacao";
 const licOk = id => ob().lic[id] && ob().lic[id].ok;
 const licEmAndamento = id => ob().lic[id] && !ob().lic[id].ok;
@@ -4547,6 +4592,74 @@ const obraLiberada = () => licOk("instalacao") && !ob().embargo;
 const preLocada = () => taxaOcupacao(lojasSh());
 const ancorasOk = () => ocupadas(lojasSh()).filter(u => u.tam === "ancora").length;
 function etapaObra() { const p = ob().pct; return p < 25 ? "Fundação" : p < 60 ? "Estrutura" : p < 85 ? "Cobertura e fachada" : p < 100 ? "Acabamento" : "Obra concluída"; }
+
+// ---------- 1.3: previsão de caixa, reserva para abrir, pausa e risco visível ----------
+const diariaSemana = () => { const o = ob(); return o.turmas * OB_CFG.turma.diaria + (o.guindaste ? OB_CFG.guindaste.diaria : 0); };
+const ritmoObra = () => { const o = ob(); return OB_CFG.turma.ritmo * o.turmas * (o.guindaste ? OB_CFG.guindaste.mult : 1); };      // % por segundo
+const fatorChuva = () => ob().lona ? 1 : 1 + OB_CFG.chuvaDur * OB_CFG.chuva * OB_CFG.chuvaDiaria;      // diárias extras pagas na chuva, em média
+const semanasObra = () => { const o = ob(); return o.pct >= 100 ? 0 : (100 - o.pct) / (ritmoObra() * DAY_LEN); };
+function compromissoNecessario() {             // a audiência só aprova com 60% de apoio: o compromisso mais barato que falta
+  const o = ob(); if (licOk("audiencia") || o.apoio >= 0.6) return 0;
+  const c = OB_CFG.compromissos.filter(x => !o.compromissos[x.id]).map(x => x.custo); return c.length ? Math.min(...c) : 0;
+}
+function previsaoObra() {
+  const o = ob(); if (o.fase === "operacao" || o.fase === "inauguracao") return null;
+  const s = sh(), lic = OB_CFG.licencas.filter(L => !o.lic[L.id]).reduce((a, L) => a + L.custo, 0);
+  const material = (100 - o.pct) * OB_CFG.materialPorPct;
+  const faltaL = Math.max(0, OB_CFG.equipe - s.limpeza), faltaS = Math.max(0, OB_CFG.equipe - s.seguranca);
+  const equipe = faltaL * SH_CFG.limpeza.contratar + faltaS * SH_CFG.seguranca.contratar;
+  const semAbrir = semanasObra() * (o.lona ? 1 : 1 + OB_CFG.chuvaDur * OB_CFG.chuva) + (licOk("habite") ? 0 : 1) + 1;   // obra + vistoria + semana da festa
+  const diarias = semanasObra() * diariaSemana() * fatorChuva();
+  const salAtual = s.limpeza * SH_CFG.limpeza.salario + s.seguranca * SH_CFG.seguranca.salario + S.park.staff * (2 + S.tier);
+  const salarios = salAtual * semAbrir + (faltaL * SH_CFG.limpeza.salario + faltaS * SH_CFG.seguranca.salario) * 2;
+  const compromisso = compromissoNecessario(), convidados = OB_CFG.convidados.filter(c => o.convidados[c.id]).reduce((a, c) => a + c.custo, 0);
+  const fixo = lic + equipe + salarios + OB_CFG.cerimonia + compromisso;
+  const obrig = Math.round(fixo + material + diarias);
+  return { lic, material: Math.round(material), equipe, diarias: Math.round(diarias), salarios: Math.round(salarios), cerimonia: OB_CFG.cerimonia, compromisso, convidados,
+    fixo: Math.round(fixo), obrig, semanas: semAbrir, sobra: Math.round(S.money - obrig - convidados) };
+}
+// o que fica guardado para abrir: tudo menos o material (online também as diárias que faltam, pagas no fechamento)
+function reservaAbertura(comDiarias = true) { const p = previsaoObra(); if (!p || ob().usarReserva) return 0; return p.fixo + p.convidados + (comDiarias ? p.diarias : 0); }
+function motivoParada() {
+  const o = ob();
+  if (o.pausada) return "pausa";
+  if (o.embargo) return "embargo";
+  if (o.chuva > 0) return "chuva";
+  if (S.money <= 0) return "dinheiro";
+  if (S.money - reservaAbertura() <= 0) return "reserva";
+  return null;
+}
+const MOTIVO_TXT = { pausa: "pausada por você", embargo: "embargada", chuva: "parada pela chuva", dinheiro: "parada sem dinheiro", reserva: "pausada para guardar o dinheiro da abertura" };
+function alternarPausa() { const o = ob(); o.pausada = !o.pausada; toast(o.pausada ? `Obra pausada: sem diárias, só a guarda do canteiro (M ${OB_CFG.guarda} por semana).` : "Obra retomada."); save(); lastSig = ""; renderSheet(); }
+function alternarReserva() { const o = ob(); o.usarReserva = !o.usarReserva; toast(o.usarReserva ? "A obra pode usar a reserva da abertura. Cuidado: pode faltar para licenças, equipe e cerimônia." : "A obra volta a guardar o dinheiro da abertura."); save(); lastSig = ""; renderSheet(); }
+function riscoEmbargo() {                      // chance de embargo até o fim da obra, no ritmo atual (só sem drenagem)
+  const o = ob(); if (o.compromissos.drenagem || o.embargo || o.pct >= 100) return 0;
+  return 1 - Math.exp(-((100 - Math.max(15, o.pct)) / ritmoObra()) * OB_CFG.embargo);
+}
+function riscoTxt() {
+  const o = ob(), out = [];
+  if (o.pct < 100) {
+    if (o.compromissos.drenagem) out.push("Embargo: sem risco, a drenagem está garantida.");
+    else if (!o.embargo) { const p = riscoEmbargo(); out.push(`Risco de embargo por drenagem até o fim da obra: <b>${p >= 0.6 ? "alto" : p >= 0.3 ? "médio" : "baixo"}</b> (cerca de ${Math.round(p * 100)}% no ritmo atual). Embargo custa M ${fmt(OB_CFG.embargoConserto)}; a compensação ambiental elimina o risco.`); }
+    out.push(o.lona ? "Chuva: a cobertura provisória mantém a obra andando." : `Chuva: em média uma parada de ${OB_CFG.chuvaDur} s a cada ${Math.round(1 / OB_CFG.chuva)} s de obra. Na chuva a obra paga meia diária; a cobertura provisória evita as paradas.`);
+  }
+  return out.join("<br>");
+}
+// compra opcional que deixaria a abertura sem dinheiro: pergunta antes (o robô de teste chama as funções direto)
+function confirmarSeFaltar(custo, oque, fn) {
+  const p = previsaoObra(); if (!p || p.sobra - custo >= 0) return fn();
+  showModal(`<h2>Vai faltar dinheiro para abrir</h2><p>${oque} custa M ${fmt(custo)}. Depois dessa compra, a previsão de caixa mostra que vão faltar <b>M ${fmt(custo - p.sobra)}</b> para concluir a obra e inaugurar.</p>
+    <p>Você pode comprar mesmo assim e cobrir a diferença com os sinais da pré-locação, ou deixar para depois.</p>
+    <div class="linha2"><button class="btn" id="cfNao">Deixar para depois</button><button class="plain" id="cfSim"><span>Comprar mesmo assim</span></button></div>`);
+  document.getElementById("cfNao").onclick = hideModal;
+  document.getElementById("cfSim").onclick = () => { hideModal(); fn(); };
+}
+function previsaoTxt() {
+  const p = previsaoObra(); if (!p) return "";
+  const cor = p.sobra < 0 ? "ruim" : p.sobra < p.obrig * 0.08 ? "aviso" : "bom", est = p.sobra < 0 ? "vai faltar dinheiro" : p.sobra < p.obrig * 0.08 ? "apertado" : "dá para abrir";
+  return `Saldo agora: <b>M ${fmt(S.money)}</b>. Obrigatório até abrir: <b>M ${fmt(p.obrig)}</b> (material M ${fmt(p.material)}, diárias M ${fmt(p.diarias)}, licenças M ${fmt(p.lic)}${p.compromisso ? `, compromisso para a audiência M ${fmt(p.compromisso)}` : ""}, equipe M ${fmt(p.equipe)}, salários M ${fmt(p.salarios)}, cerimônia M ${fmt(p.cerimonia)}).${p.convidados ? ` Convidados escolhidos: M ${fmt(p.convidados)}.` : ""}
+    <br>Sobra prevista: <span class="tag ${cor}">${p.sobra < 0 ? "-" : ""}M ${fmt(Math.abs(p.sobra))} · ${est}</span> · cerca de ${Math.max(1, Math.round(p.semanas))} semana(s) até abrir.${ob().sinais ? ` Sinais de pré-locação recebidos: M ${fmt(ob().sinais)}.` : ""}${p.sobra < 0 ? "<br>Para fechar a conta: devolva turmas ou guindaste, dispense equipe além de 6, desmarque convidados ou peça o aporte da incorporadora (sem juros)." : ""}`;
+}
 
 // ---------- ações ----------
 function iniciarLicenca(id) {
@@ -4604,16 +4717,27 @@ function tickObra(dt) {
   if (o.fase === "licencas" && obraLiberada()) { o.fase = "obra"; banner("🏗️ Obra liberada!", "#6b3fa0"); }
   if ((o.fase === "obra" || o.fase === "preparacao") && o.pct < 100) {
     if (o.chuva > 0) o.chuva -= dt;
-    else if (!o.lona && Math.random() < OB_CFG.chuva * dt) { o.chuva = OB_CFG.chuvaDur; banner("🌧️ Chuva forte: obra parada", "#4a6fa5"); }
-    if (!o.embargo && !o.compromissos.drenagem && o.pct > 15 && Math.random() < OB_CFG.embargo * dt) { o.embargo = true; banner("⛔ Obra embargada: drenagem", "#c9513a"); toast("Fiscalização embargou a obra por causa da drenagem. Faça a obra exigida no painel da obra para retomar."); lastSig = ""; }
-    if (o.chuva <= 0 && !o.embargo && S.money > 0) {
-      const ganho = dt * OB_CFG.turma.ritmo * o.turmas * (o.guindaste ? OB_CFG.guindaste.mult : 1), c = ganho * OB_CFG.materialPorPct;
-      o.pct = Math.min(100, o.pct + ganho); S.money -= c; S.today.outrasDesp = (S.today.outrasDesp || 0) + c; o.gasto += c; o.hoje.material += c;
-      if (o.pct >= 100) { banner("🏁 Obra concluída! Falta a vistoria e o habite-se.", "#6b3fa0"); lastSig = ""; }
-    } else if (S.money <= 0) toastOnce("obraSemDinheiro", "Sem dinheiro para material: a obra parou.");
+    else if (!o.lona && !o.pausada && !o.embargo && Math.random() < OB_CFG.chuva * dt) { o.chuva = OB_CFG.chuvaDur; banner("🌧️ Chuva forte: obra parada", "#4a6fa5"); }
+    const motivo = motivoParada();
+    // embargo só acontece com a obra andando (antes também na obra parada)
+    if (!motivo && !o.compromissos.drenagem && o.pct > 15 && Math.random() < OB_CFG.embargo * dt) { o.embargo = true; banner("⛔ Obra embargada: drenagem", "#c9513a"); toast("Fiscalização embargou a obra por causa da drenagem. Faça a obra exigida no painel da obra para retomar."); lastSig = ""; }
+    if (!motivo && !o.embargo) {
+      // material: nunca abaixo da reserva da abertura (nem do zero com a reserva liberada)
+      const quer = dt * ritmoObra(), livre = Math.max(0, S.money - reservaAbertura()), ganho = Math.min(quer, livre / OB_CFG.materialPorPct, 100 - o.pct), c = ganho * OB_CFG.materialPorPct;
+      o.pct = Math.min(100, o.pct + ganho); S.money -= c; S.today.outrasDesp = (S.today.outrasDesp || 0) + c; o.gasto += c; o.hoje.material += c; o.hoje.tAtiva += dt;
+      if (o.pct >= 100) { o.pct = 100; banner("🏁 Obra concluída! Falta a vistoria e o habite-se.", "#6b3fa0"); lastSig = ""; }
+    } else if (motivo === "chuva") o.hoje.tChuva += dt;
+    else o.hoje.tParada += dt;
+    const m2 = motivoParada();
+    if (m2 !== o.motivoAnt) {
+      if (m2 === "reserva") { banner("⏸️ Obra pausada para guardar o dinheiro da abertura", "#b7773b"); anunciar("Obra pausada: o saldo restante está guardado para licenças, equipe, salários e cerimônia. Veja a previsão de caixa no painel da obra."); }
+      else if (m2 === "dinheiro") { banner("⏸️ Sem dinheiro: obra parada, sem diárias", "#c9513a"); anunciar("Sem dinheiro para material: a obra parou e as turmas não recebem diária enquanto estiver parada."); }
+      o.motivoAnt = m2; lastSig = "";
+    }
   }
   if (o.fase === "obra" && o.pct >= 50) { o.fase = "preparacao"; banner("🏬 Pré-locação aberta: as primeiras propostas chegaram", "#6b3fa0"); lastSig = ""; }
-  if (o.fase === "preparacao" || o.fase === "inauguracao") tickLocacao(lojasSh(), SH_LOC(), dt);
+  // na semana da festa o tickShopping já anda com a locação (antes rodava duas vezes e as propostas venciam no dobro da velocidade)
+  if (o.fase === "preparacao" || (o.fase === "inauguracao" && S.day < o.inauguracao)) tickLocacao(lojasSh(), SH_LOC(), dt);
   // operários (só desenho)
   const quer = (o.fase === "obra" || o.fase === "preparacao") && o.pct < 100 ? o.turmas * 3 : 0;
   while (operarios.length < quer) operarios.push({ id: 9000 + operarios.length, x: 40 + Math.random() * (W - 80), y: 140 + Math.random() * (H - 200), path: [], skin: pick(SKIN), hair: pick(HAIR) });
@@ -4633,12 +4757,17 @@ function tickInauguracao(dt) {
 }
 function fechamentoObra() {
   const o = ob(), s = sh(), conv = OB_CFG.convidados.filter(c => o.convidados[c.id]);
-  const diarias = o.pct < 100 && (o.fase === "obra" || o.fase === "preparacao") ? o.turmas * OB_CFG.turma.diaria + (o.guindaste ? OB_CFG.guindaste.diaria : 0) : 0;
-  if (diarias) { S.money -= diarias; S.today.outrasDesp = (S.today.outrasDesp || 0) + diarias; S.today.linhas = (S.today.linhas || []).concat([["Diárias da obra (turmas e guindaste)", `-M ${fmt(diarias)}`], ["Material da obra nesta semana", `-M ${fmt(o.hoje.material)}`]]); }
-  o.hoje.material = 0;
-  if (o.fase === "operacao") fecharSemanaShopping();
+  // diárias só pelo tempo de obra andando (chuva paga metade); obra parada paga só a guarda do canteiro, sem levar ao vermelho
+  const h = o.hoje, diarias = Math.round(diariaSemana() * Math.min(1, (h.tAtiva + OB_CFG.chuvaDiaria * h.tChuva) / DAY_LEN));
+  const guarda = Math.round(Math.min(Math.max(0, S.money - diarias), OB_CFG.guarda * Math.min(1, h.tParada / DAY_LEN)));
+  if (diarias || guarda || h.material) {
+    S.money -= diarias + guarda; S.today.outrasDesp = (S.today.outrasDesp || 0) + diarias + guarda;
+    S.today.linhas = (S.today.linhas || []).concat([["Diárias da obra (turmas e guindaste)", `-M ${fmt(diarias)}`], ["Material da obra nesta semana (já descontado)", `-M ${fmt(h.material)}`]].concat(guarda ? [["Guarda do canteiro (obra parada)", `-M ${fmt(guarda)}`]] : []));
+  }
+  o.hoje = novoHojeOb();
+  if (o.fase === "operacao") { const o0 = S.today.outras || 0; fecharSemanaShopping(); pagarAporte((S.today.outras || 0) - o0); }
   else if (o.fase === "inauguracao" && S.day >= o.inauguracao) {
-    fecharSemanaShopping();            // primeira semana de aluguéis
+    { const o0 = S.today.outras || 0; fecharSemanaShopping(); pagarAporte((S.today.outras || 0) - o0); }            // primeira semana de aluguéis
     const h = s.hoje, sat = h.satT ? h.satSoma / h.satT : s.satEMA, satF = Math.min(1, sat + conv.reduce((a, c) => a + c.sat, 0));
     o.relInaug = { semana: semana(), publico: h.visitas, recusados: h.recusados, custos: o.custoInaug, alugueis: (s.ultimoLoc || {}).receita || 0, vendas: Math.round(h.vendas), satisfacao: satF, convidados: conv.map(c => c.nome) };
     o.relInaug.resultado = o.relInaug.alugueis - o.custoInaug;
@@ -4695,6 +4824,12 @@ function buildObra(body) {
   const o = ob();
   head("🏗️", "#ece4f4", "Obra e inauguração", () => `${etapaObra()} · ${o.pct.toFixed(0)}% · licenças ${licencasOk()}/${OB_CFG.licencas.length}`);
   body.appendChild(el("p", "note", "Licenças antes, obra depois, pré-locação e equipe a partir da metade da obra, e por fim a inauguração. Valores e prazos são do jogo, inspirados nas etapas reais de um empreendimento grande."));
+  if (o.fase !== "operacao" && o.fase !== "inauguracao") {
+    const pv = el("div", "card resumo", `<h3>Previsão de caixa até a abertura</h3><p class="note" id="obPrev"></p>`);
+    live(() => { const q = pv.querySelector("#obPrev"); if (q) q.innerHTML = previsaoTxt(); });
+    pv.appendChild(el("p", "note", "A obra só gasta material acima do que está guardado para licenças, equipe, salários e cerimônia. Cada loja assinada na pré-locação paga um sinal de uma semana de aluguel."));
+    body.appendChild(pv);
+  }
   // licenças
   body.appendChild(el("div", "sec-title", "1. Licenças"));
   OB_CFG.licencas.forEach(L => { const l = o.lic[L.id], ok = licOk(L.id), bloq = L.req.some(r => !licOk(r)) || (L.fimObra && o.pct < 100);
@@ -4702,24 +4837,36 @@ function buildObra(body) {
     if (!l && !bloq) { const b = el("button", "btn mini", `Iniciar (M ${fmt(L.custo)})`); b.setAttribute("aria-label", `Iniciar ${L.nome}`); b.onclick = () => iniciarLicenca(L.id); c.appendChild(b); }
     body.appendChild(c); });
   const cc = el("div", "card", `<h3>Compromissos com a vizinhança</h3><p class="note">A audiência aprova com apoio de 60% ou mais. Apoio agora: <b>${pctTxt(o.apoio)}</b>.</p>`);
-  OB_CFG.compromissos.forEach(c => { const b = el("button", o.compromissos[c.id] ? "plain mini" : "btn mini", o.compromissos[c.id] ? `<span>✅ ${c.nome}</span>` : `${c.nome}: M ${fmt(c.custo)} (+${Math.round(c.apoio * 100)}% de apoio${c.previneEmbargo ? ", evita embargo" : ""})`); if (!o.compromissos[c.id]) b.onclick = () => assumirCompromisso(c.id); cc.appendChild(b); });
+  OB_CFG.compromissos.forEach(c => { const b = el("button", o.compromissos[c.id] ? "plain mini" : "btn mini", o.compromissos[c.id] ? `<span>✅ ${c.nome}</span>` : `${c.nome}: M ${fmt(c.custo)} (+${Math.round(c.apoio * 100)}% de apoio${c.previneEmbargo ? `, evita embargo (risco agora ${Math.round(riscoEmbargo() * 100)}%)` : ""})`);
+    if (!o.compromissos[c.id]) b.onclick = () => confirmarSeFaltar(c.custo - compromissoNecessario(), c.nome, () => assumirCompromisso(c.id)); cc.appendChild(b); });
   body.appendChild(cc);
   // obra
   body.appendChild(el("div", "sec-title", "2. Obra"));
   const oc = el("div", "card", `<p class="note" id="obTxt"></p>`);
-  live(() => { const q = oc.querySelector("#obTxt"); if (q) q.innerHTML = !obraLiberada() && !o.embargo ? "Aguardando a licença de instalação." : o.embargo ? '<span class="tag ruim">Embargada</span> por drenagem.' : o.pct >= 100 ? "Obra concluída." : `${etapaObra()}: ${o.pct.toFixed(1)}%${o.chuva > 0 ? ' · <span class="tag aviso">chuva</span>' : ""} · material: M ${OB_CFG.materialPorPct} por 1%. Gasto até agora: M ${fmt(o.gasto)}.`; });
-  oc.appendChild(passo("Turmas de obra", () => `${ob().turmas} (M ${OB_CFG.turma.diaria}/semana cada)`, () => mudarTurmas(-1), () => mudarTurmas(1), "turmas de obra"));
+  live(() => { const q = oc.querySelector("#obTxt"); if (!q) return; const m = motivoParada();
+    q.innerHTML = !obraLiberada() && !o.embargo ? "Aguardando a licença de instalação." : o.embargo ? '<span class="tag ruim">Embargada</span> por drenagem: sem diárias, só a guarda do canteiro.' : o.pct >= 100 ? "Obra concluída." : `${etapaObra()}: ${o.pct.toFixed(1)}%${m ? ` · <span class="tag ${m === "chuva" ? "aviso" : "ruim"}">${MOTIVO_TXT[m]}</span>` : ""} · material: M ${OB_CFG.materialPorPct} por 1%. Gasto até agora: M ${fmt(o.gasto)}.`; });
+  if (o.pct < 100) {
+    const rk = el("p", "note", riscoTxt()); oc.appendChild(rk);
+    const bp = el("button", o.pausada ? "btn" : "plain toggle", o.pausada ? "Retomar a obra" : `<span>Pausar a obra (sem diárias; guarda do canteiro M ${OB_CFG.guarda}/semana)</span>`); bp.setAttribute("aria-pressed", String(!!o.pausada)); bp.onclick = alternarPausa; oc.appendChild(bp);
+    if (precisaResgate()) { const bs = el("button", "btn", `Pedir aporte da incorporadora (M ${fmt(valorSocorro())}, sem juros)`); bs.onclick = confirmarSocorro; oc.appendChild(bs); }
+    if (o.usarReserva || motivoParada() === "reserva") { const br = el("button", "plain toggle", `<span>Deixar a obra usar a reserva da abertura: <b>${o.usarReserva ? "sim" : "não"}</b></span>`); br.setAttribute("aria-pressed", String(!!o.usarReserva)); br.onclick = alternarReserva; oc.appendChild(br); }
+  }
+  oc.appendChild(passo("Turmas de obra", () => `${ob().turmas} (M ${OB_CFG.turma.diaria}/semana cada, só com a obra andando)`, () => mudarTurmas(-1), () => confirmarSeFaltar(OB_CFG.turma.contratar, "Uma turma de obra", () => mudarTurmas(1)), "turmas de obra"));
   const bg = el("button", "plain toggle", `<span>Guindaste alugado (M ${OB_CFG.guindaste.diaria}/semana, +${Math.round((OB_CFG.guindaste.mult - 1) * 100)}%): <b>${o.guindaste ? "sim" : "não"}</b></span>`); bg.setAttribute("aria-pressed", String(o.guindaste)); bg.onclick = alternarGuindaste; oc.appendChild(bg);
-  if (!o.lona) { const b = el("button", "plain", `<span>Cobertura provisória contra chuva: M ${fmt(OB_CFG.lona)}</span>`); b.onclick = comprarLona; oc.appendChild(b); } else oc.appendChild(el("p", "note", "✅ Cobertura provisória: a chuva não para a obra."));
+  if (!o.lona) { const b = el("button", "plain", `<span>Cobertura provisória contra chuva: M ${fmt(OB_CFG.lona)}</span>`); b.onclick = () => confirmarSeFaltar(OB_CFG.lona, "A cobertura provisória", comprarLona); oc.appendChild(b); } else oc.appendChild(el("p", "note", "✅ Cobertura provisória: a chuva não para a obra."));
   if (o.embargo) { const b = el("button", "btn", `Fazer a drenagem exigida (M ${fmt(OB_CFG.embargoConserto)})`); b.onclick = resolverEmbargo; oc.appendChild(b); }
   body.appendChild(oc);
+  if (o.pct >= 100 && precisaResgate()) { const bs = el("button", "btn", `Pedir aporte da incorporadora (M ${fmt(valorSocorro())}, sem juros)`); bs.onclick = confirmarSocorro; oc.appendChild(bs); }
+  if (o.divida > 0) oc.appendChild(el("p", "note", `Aporte a devolver à incorporadora: <b>M ${fmt(o.divida)}</b> (20% dos aluguéis de cada semana depois da inauguração, sem juros).`));
   // preparação
   body.appendChild(el("div", "sec-title", "3. Preparação"));
   const pc = el("div", "card", `<p class="note">${o.pct < 50 ? "A pré-locação abre com a obra em 50%." : `Lojas assinadas: <b>${ocupadas(lojasSh()).length} de ${lojasSh().unidades.length}</b> (${pctTxt(preLocada())}; meta ${pctTxt(OB_CFG.preLocacao)} com 2 âncoras). O aluguel começa na inauguração.`}</p>`);
   if (o.pct >= 50) { const b = el("button", "btn", "Pré-locação: propostas de lojistas"); b.onclick = () => openSheet("lojas"); pc.appendChild(b); }
-  pc.appendChild(passo("Limpeza", () => `${sh().limpeza} de ${OB_CFG.equipe}`, () => mudarEquipeSh("limpeza", -1), () => mudarEquipeSh("limpeza", 1), "equipe de limpeza"));
-  pc.appendChild(passo("Segurança", () => `${sh().seguranca} de ${OB_CFG.equipe}`, () => mudarEquipeSh("seguranca", -1), () => mudarEquipeSh("seguranca", 1), "seguranças"));
-  const cd = OB_CFG.divulgacao[o.divulgacao]; const bd = el("button", cd != null ? "plain" : "plain", `<span>Divulgação da inauguração: nível ${o.divulgacao}${cd != null ? ` → ${o.divulgacao + 1} por M ${fmt(cd)}` : " (máximo)"}</span>`); if (cd != null) bd.onclick = divulgar; pc.appendChild(bd);
+  const maisEquipe = papel => sh()[papel] >= OB_CFG.equipe ? confirmarSeFaltar(SH_CFG[papel].contratar, papel === "limpeza" ? "Mais uma pessoa na limpeza" : "Mais um segurança", () => mudarEquipeSh(papel, 1)) : mudarEquipeSh(papel, 1);
+  pc.appendChild(el("p", "note", "Dica: equipe contratada cedo recebe salário toda semana até a abertura."));
+  pc.appendChild(passo("Limpeza", () => `${sh().limpeza} de ${OB_CFG.equipe}`, () => mudarEquipeSh("limpeza", -1), () => maisEquipe("limpeza"), "equipe de limpeza"));
+  pc.appendChild(passo("Segurança", () => `${sh().seguranca} de ${OB_CFG.equipe}`, () => mudarEquipeSh("seguranca", -1), () => maisEquipe("seguranca"), "seguranças"));
+  const cd = OB_CFG.divulgacao[o.divulgacao]; const bd = el("button", cd != null ? "plain" : "plain", `<span>Divulgação da inauguração: nível ${o.divulgacao}${cd != null ? ` → ${o.divulgacao + 1} por M ${fmt(cd)}` : " (máximo)"}</span>`); if (cd != null) bd.onclick = () => confirmarSeFaltar(cd, "A campanha de divulgação", divulgar); pc.appendChild(bd);
   body.appendChild(pc);
   // inauguração
   body.appendChild(el("div", "sec-title", "4. Inauguração"));
@@ -4784,6 +4931,8 @@ FASE_CFG.grande = cfgShopping({
     const o = ob();
     if (operando()) return FASE_CFG.brisa.missao();
     if (o.embargo) return { title: "Obra embargada", sub: "Faça a drenagem exigida", p: o.pct / 100, ring: "⛔", go: () => openSheet("obra") };
+    const mp = o.fase !== "licencas" && o.pct < 100 ? motivoParada() : null;
+    if (mp === "reserva" || mp === "dinheiro") return { title: "Obra pausada", sub: mp === "reserva" ? "Dinheiro guardado para abrir: veja a previsão" : "Sem dinheiro para material", p: o.pct / 100, ring: "⏸️", go: () => openSheet("obra") };
     const prox = OB_CFG.licencas.find(L => !o.lic[L.id] && !L.req.some(r => !licOk(r)) && !(L.fimObra && o.pct < 100));
     if (prox) return { title: prox.nome, sub: `Iniciar por M ${fmt(prox.custo)}`, p: licencasOk() / OB_CFG.licencas.length, ring: "📋", go: () => openSheet("obra") };
     if (o.pct >= 50 && lojasSh().propostas.length && preLocada() < OB_CFG.preLocacao) return { title: "Pré-locação", sub: `${lojasSh().propostas.length} proposta(s) de lojistas`, p: preLocada(), ring: "🏬", go: () => openSheet("lojas") };
@@ -4795,8 +4944,8 @@ FASE_CFG.grande = cfgShopping({
     const L = lojasSh(); L.propostas = [];
     S.obra = novaObra(); S.shop.limpeza = 0; S.shop.seguranca = 0; S.park.staff = 1;
   },
-  carregar() { ob(); sh(); lojasSh(); },
-  reabrir(r) { const o = ob(); OB_CFG.licencas.forEach(L => o.lic[L.id] = { ok: true, t: 0 }); o.pct = 100; o.fase = "operacao"; o.inaugurado = 1; const s = sh(); s.limpeza = 6; s.seguranca = 6; reabrirComum(r); },
+  carregar() { ob(); sh(); lojasSh(); verificarResgate(); },
+  reabrir(r) { const o = ob(); o.v13 = true; OB_CFG.licencas.forEach(L => o.lic[L.id] = { ok: true, t: 0 }); o.pct = 100; o.fase = "operacao"; o.inaugurado = 1; const s = sh(); s.limpeza = 6; s.seguranca = 6; reabrirComum(r); },
   reaberturaTxt: "shopping inaugurado, equipe de operação e o orçamento inicial do Grande (M 45.000)",
   previa: () => `<svg viewBox="0 0 220 120" class="previa" role="img" aria-label="Esquema do Maricá Grande Shopping: terreno grande junto à rodovia, prédio com três âncoras, corredor longo com quiosques, praça de alimentação e estacionamento amplo. Começa como canteiro de obras.">
     <rect width="220" height="120" rx="10" fill="#bfd08f"/><rect y="4" width="220" height="12" fill="#6f777c"/>
@@ -4821,24 +4970,97 @@ FASE_CFG.grande = cfgShopping({
   chegadaPropria(car) { if (!operando() && !(ob().fase === "inauguracao" && S.day >= ob().inauguracao)) { if (car) car.back++; return; } novoVisitante(car); },
   aoVoltarProprio(days) {
     const o = ob(), L = [];
-    if (operando()) return shoppingAoVoltar(days);
+    if (operando()) { const R = shoppingAoVoltar(days);     // o ganho offline vem da média do dia, que já desconta a devolução do aporte
+      if (o.divida > 0 && o.pagUlt) { const v = Math.min(o.divida, o.pagUlt * days); o.divida -= v; R.push(["Devolução do aporte da incorporadora", `M ${fmt(v)}${o.divida ? ` (faltam M ${fmt(o.divida)})` : " (quitado)"}`]); }
+      return R; }
     // licenças em andamento terminam; a obra anda no ritmo do gerente (com material cobrado uma vez)
     let fim = 0; OB_CFG.licencas.forEach(Li => { const l = o.lic[Li.id]; if (l && !l.ok && !l.espera) { l.t += days * DAY_LEN; if (l.t >= Li.dias * DAY_LEN) { l.ok = Li.id !== "audiencia" || o.apoio >= 0.6; if (!l.ok) { l.espera = true; l.t = 0; } else fim++; } } });
     if (fim) L.push(["Licenças concluídas enquanto você esteve fora", String(fim)]);
-    if (obraLiberada() && o.pct < 100) { const ritmo = OB_CFG.turma.ritmo * o.turmas * (o.guindaste ? OB_CFG.guindaste.mult : 1) * DAY_LEN * 0.5 * mgrEff(S.mgrLvl);
-      const ganho = Math.min(100 - o.pct, ritmo * days, Math.max(0, S.money) / OB_CFG.materialPorPct), c = ganho * OB_CFG.materialPorPct;
-      if (ganho > 0) { o.pct += ganho; S.money -= c; o.gasto += c; L.push(["Obra avançou enquanto você esteve fora", `+${ganho.toFixed(0)}% (material M ${fmt(c)})`]); } }
+    // 1.3: fora do app vale a mesma conta de dentro: salários da equipe, material e diárias pelo que a obra andou,
+    // sem passar da reserva da abertura e sem nunca deixar o saldo negativo
+    const s = sh(), sal = Math.min(Math.max(0, S.money), (s.limpeza * SH_CFG.limpeza.salario + s.seguranca * SH_CFG.seguranca.salario) * days);
+    if (sal > 0) { S.money -= sal; L.push(["Salários da equipe enquanto você esteve fora", `-M ${fmt(sal)}`]); }
+    if (obraLiberada() && o.pct < 100 && !o.pausada) {
+      const ritmo = ritmoObra() * DAY_LEN * 0.5 * mgrEff(S.mgrLvl), porPct = OB_CFG.materialPorPct + diariaSemana() / (ritmoObra() * DAY_LEN);
+      const ganho = Math.min(100 - o.pct, ritmo * days, Math.max(0, S.money - reservaAbertura(false)) / porPct), mat = ganho * OB_CFG.materialPorPct, dia = ganho * (porPct - OB_CFG.materialPorPct);
+      if (ganho > 0) { o.pct = Math.min(100, o.pct + ganho); S.money -= mat + dia; o.gasto += mat; L.push(["Obra avançou enquanto você esteve fora", `+${ganho.toFixed(0)}% (material M ${fmt(mat)}, diárias M ${fmt(dia)})`]); }
+      if (ritmo * days > ganho + 0.01 && o.pct < 100) L.push(["Obra pausada para guardar o dinheiro da abertura", "veja a previsão de caixa"]); }
     o.chuva = 0;
     return L;
   },
 });
+// ---------- 1.3: resgate de partidas presas e sinal da pré-locação ----------
+// Partidas de versões anteriores (sem a marca v13) que abrem com saldo negativo ou com a previsão de caixa
+// negativa recebem, uma única vez, o saldo que falta para concluir e inaugurar, com margem, sem juros.
+// Antes, uma cópia do save da carreira é guardada em chave separada.
+const CHAVE_COPIA_RESGATE = "mercadinho-carreira-v1-copia-antes-resgate";
+let resgateMostrar = null;
+function precisaResgate() { const o = ob(); if (o.fase === "operacao" || o.fase === "inauguracao") return false; const p = previsaoObra(); return !!p && (S.money < 0 || p.sobra < 0); }
+function aplicarResgate(origem) {
+  const o = ob(), p = previsaoObra(); if (!p) return null;
+  try { const atual = localStorage.getItem(CHAVE_CARREIRA); if (atual) localStorage.setItem(CHAVE_COPIA_RESGATE, atual); } catch (e) {}
+  const alvo = Math.round(p.obrig + p.convidados + Math.max(OB_CFG.resgateMin, p.obrig * OB_CFG.resgateMargem));
+  if (S.money >= alvo) return null;
+  const r = { em: Date.now(), antes: Math.round(S.money), depois: alvo, origem };
+  o.resgates = (o.resgates || []).concat([r]); o.resgate = true; o.usarReserva = false;
+  S.money = alvo; o.motivoAnt = null; save(); return r;
+}
+function verificarResgate() {
+  const o = ob(); if (o.v13) return;
+  const r = precisaResgate() ? aplicarResgate("automatico") : null;
+  o.v13 = true; save();
+  if (r) { resgateMostrar = r; setTimeout(() => mostrarResgate(r), 1200); }
+}
+// Aporte da incorporadora (1.3): quando a partida da 1.3 fica sem caixa para terminar e abrir, o jogador pode
+// pedir o mesmo valor do resgate; ele é devolvido sem juros com 20% dos aluguéis de cada semana após a inauguração.
+function valorSocorro() { const p = previsaoObra(); return p ? Math.max(0, Math.round(p.obrig + p.convidados + Math.max(OB_CFG.resgateMin, p.obrig * OB_CFG.resgateMargem)) - Math.round(S.money)) : 0; }
+function confirmarSocorro() {
+  const v = valorSocorro(); if (!v) return;
+  showModal(`<h2>🤝 Aporte da incorporadora</h2><p>A incorporadora adianta <b>M ${fmt(v)}</b> para terminar a obra e inaugurar: material, licenças, equipe, salários e cerimônia que faltam, com uma pequena folga.</p>
+    <p>Não há juros. Depois da inauguração, 20% dos aluguéis de cada semana vão para a devolução até quitar.${ob().divida ? ` Já devido: M ${fmt(ob().divida)}.` : ""}</p>
+    <div class="row"><button class="btn" id="sim">Aceitar o aporte</button><button class="plain" id="nao">Agora não</button></div>`);
+  document.getElementById("sim").onclick = () => { hideModal(); pedirSocorro(); };
+  document.getElementById("nao").onclick = hideModal;
+}
+function pedirSocorro() {
+  const o = ob(); if (!precisaResgate()) return null;
+  const r = aplicarResgate("aporte"); if (!r) return null;
+  const v = r.depois - r.antes; o.divida = Math.round((o.divida || 0) + v);
+  S.today.outras = (S.today.outras || 0) + v; S.today.linhas = (S.today.linhas || []).concat([["Aporte da incorporadora (a devolver sem juros)", `+M ${fmt(v)}`]]);
+  banner(`🤝 Aporte de M ${fmt(v)}`, "#2e7a57"); lastSig = ""; renderSheet(); return r;
+}
+function pagarAporte(receita) {
+  const o = ob(); if (!(o.divida > 0) || !(receita > 0)) return 0;
+  const v = Math.min(o.divida, Math.round(receita * 0.2)); if (v <= 0) return 0;
+  o.divida -= v; S.money -= v; S.today.outrasDesp = (S.today.outrasDesp || 0) + v; o.pagUlt = v;
+  S.today.linhas = (S.today.linhas || []).concat([["Devolução do aporte da incorporadora", `-M ${fmt(v)}${o.divida ? ` (faltam M ${fmt(o.divida)})` : " (quitado)"}`]]);
+  return v;
+}
+function mostrarResgate(r) {
+  if (!document.getElementById("modal").hidden) { filaModal.push(() => mostrarResgate(r)); return; }
+  showModal(`<h2>🏗️ Obra replanejada</h2><p>Nesta versão a obra do Maricá Grande Shopping ganhou previsão de caixa, pausa e reserva para a abertura. A sua partida tinha ficado sem dinheiro para terminar, então a incorporadora cobriu a diferença, sem juros.</p>
+    <table><tr><td>Saldo antes</td><td class="${r.antes < 0 ? "neg" : ""}">${r.antes < 0 ? "-" : ""}M ${fmt(Math.abs(r.antes))}</td></tr><tr><td>Saldo agora</td><td class="pos">M ${fmt(r.depois)}</td></tr></table>
+    <p>O valor cobre material, licenças, equipe, salários e cerimônia que faltam, com uma pequena folga. Acompanhe a previsão no painel da obra. Isso acontece uma única vez.</p><button class="btn" id="ok">Continuar a obra</button>`);
+  document.getElementById("ok").onclick = hideModal;
+}
+if (OB_ATIVO) {
+  const aceitar0 = aceitarProposta;
+  aceitarProposta = (L, id) => {             // pré-locação: cada contrato novo assinado antes da inauguração paga um sinal
+    const p = L.propostas.find(x => x.id === id), ok = aceitar0(L, id);
+    if (ok && p && !p.renovacao && L === S.lojasSh && !operando() && ob().fase !== "inauguracao") {
+      const v = Math.round(p.aluguel * OB_CFG.sinalSemanas); S.money += v; S.today.outras = (S.today.outras || 0) + v; ob().sinais += v;
+      toast(`${p.nome} assinou e pagou M ${fmt(v)} de sinal.`);
+    }
+    return ok;
+  };
+}
 FASE_CFG.grande.semCarros = () => !operando() && !(ob().fase === "inauguracao" && S.day >= ob().inauguracao);
 if (OB_ATIVO) {
   GANCHOS.semCarros = () => FASE_CFG.grande.semCarros();
   gancho("bRect", sel => sel.kind === "obra" ? { x: 0, y: 30, w: W, h: H - 26 } : null);
   gancho("painel", (sel, body) => { if (sel.kind === "obra") { buildObra(body); return true; } return null; });
   const a0 = GANCHOS.assinatura;
-  GANCHOS.assinatura = () => { const o = ob(); return (a0 ? a0() : "") + `|ob${o.fase}${JSON.stringify(o.lic).replace(/"t":[\d.]+/g, "")}${Object.keys(o.compromissos).join()}${o.turmas}${o.guindaste}${o.lona}${o.embargo}${o.divulgacao}${JSON.stringify(o.convidados)}${Math.floor(o.pct / 5)}${o.chuva > 0}`; };
+  GANCHOS.assinatura = () => { const o = ob(); return (a0 ? a0() : "") + `|ob${o.fase}${JSON.stringify(o.lic).replace(/"t":[\d.]+/g, "")}${Object.keys(o.compromissos).join()}${o.turmas}${o.guindaste}${o.lona}${o.embargo}${o.divulgacao}${JSON.stringify(o.convidados)}${Math.floor(o.pct / 5)}${o.chuva > 0}${o.pausada}${o.usarReserva}${motivoParada()}`; };
   PAINEIS.obra = buildObra;
 }
 </script>
@@ -7342,6 +7564,176 @@ function resumoOperacao(t, o) {
     <button class="btn" id="ok">Administrar</button>`);
   document.getElementById("ok").onclick = () => { hideModal(); save(); };
 }
+</script>
+<script>
+"use strict";
+// =====================================================================
+// 1.3: ferramentas fora da jogabilidade
+//   · "Relatar problema": o jogador escreve, revisa o diagnóstico e envia pelo WhatsApp do responsável.
+//     Nada é enviado sem o toque do jogador; o save completo nunca vai junto.
+//   · Aviso de nova versão (só no APK): consulta um arquivo pequeno no site do jogo.
+//   · Painel de trapaças (modo desenvolvedor): 7 toques na versão nas Configurações + código.
+//     Todo uso fica marcado no save (S.trapacas / CARREIRA.trapacas).
+// =====================================================================
+const APP_VERSAO = "1.3";
+const SITE_JOGO = "https://danielcamposdasilva-tech.github.io/mercadinho/";
+const WHATS_SUPORTE = "5521988612660";
+const DEV_HASH = 1898547767;                  // código do modo desenvolvedor (só o hash fica no jogo)
+const ehNativo = () => !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+function plataforma() {
+  if (ehNativo()) return "APK Android";
+  const sa = (window.matchMedia && matchMedia("(display-mode: standalone)").matches) || navigator.standalone;
+  return sa ? "app da tela inicial" : "navegador";
+}
+function abrirExterno(url) { if (ehNativo()) location.href = url; else window.open(url, "_blank", "noopener"); }
+
+// ---------- últimos acontecimentos (avisos e faixas mostrados ao jogador) ----------
+const ACONTECIMENTOS = [];
+function regAcontecimento(txt) { if (!txt) return; ACONTECIMENTOS.push(`d${typeof S !== "undefined" && S ? S.day : "?"} ${String(txt).replace(/<[^>]+>/g, "").slice(0, 90)}`); if (ACONTECIMENTOS.length > 12) ACONTECIMENTOS.shift(); }
+// toast é declarado em 13-hud-loop (carregado depois): o embrulho é feito quando todos os scripts já rodaram
+setTimeout(() => { if (typeof toast !== "function" || typeof banner !== "function") return; const t0 = toast, b0 = banner;
+  toast = msg => { regAcontecimento(msg); return t0(msg); };
+  banner = (txt, color) => { regAcontecimento(txt); return b0(txt, color); }; }, 0);
+
+// ---------- diagnóstico revisável ----------
+function aparelho() {
+  const ua = navigator.userAgent || "", m = ua.match(/Android [\d.]+;[^)]*/) || ua.match(/(iPhone|iPad)[^)]*/) || ua.match(/\(([^)]*)\)/);
+  return (m ? m[0] : ua).replace(/; wv/, "").slice(0, 70);
+}
+function diagnosticoLinhas() {
+  const L = [`Versão ${APP_VERSAO} · ${plataforma()}`, `Aparelho: ${aparelho()} · tela ${innerWidth}x${innerHeight}`];
+  const modo = MODO === "carreira" ? `Carreira, capítulo ${CFG ? CFG.capitulo : "?"} (${CFG ? CFG.titulo : FASE})` : MODO === "livre" ? "Meu Mercado (modo livre)" : MODO;
+  L.push(`Modo: ${modo} · dia ${S.day} · saldo M ${fmt(S.money)}`);
+  if (NA_CARREIRA && FASE === "grande" && S.obra) { const o = S.obra, m = typeof motivoParada === "function" && o.fase !== "operacao" ? motivoParada() : null;
+    L.push(`Obra: ${o.fase}, ${Math.round(o.pct)}%, licenças ${Object.values(o.lic).filter(x => x.ok).length}/5${m ? `, ${MOTIVO_TXT[m]}` : ""}${o.resgate ? ", resgate usado" : ""}`); }
+  if (NA_CARREIRA && FASE === "cajueiro" && S.atac) { const a = S.atac; L.push(`Atacado: ${a.totFardos} fardos, ${a.nPos} posições, ${a.ops} empilhadeiras (${a.opsDoca} na doca), compra automática ${a.auto ? "ligada" : "desligada"}`); }
+  if (S.trapacas || (CARREIRA && CARREIRA.trapacas)) L.push("Trapaças usadas nesta partida");
+  const er = (window.__erros || []).slice(-5); if (er.length) L.push("Erros: " + er.map(e => e.m).join(" | "));
+  return L;
+}
+function textoRelato(desc, comDiag, comAcont, id) {
+  let t = `Mercadinho da Esquina, relato ${id}\n\n${desc.trim() || "(sem descrição)"}`;
+  if (comDiag) t += "\n\n— Diagnóstico —\n" + diagnosticoLinhas().join("\n");
+  if (comAcont && ACONTECIMENTOS.length) t += "\n\n— Últimos acontecimentos —\n" + ACONTECIMENTOS.slice(-10).join("\n");
+  return t.slice(0, 1800);
+}
+function abrirRelato() {
+  closeSheet();
+  const id = Math.random().toString(36).slice(2, 8).toUpperCase();
+  showModal(`<h2>Relatar problema</h2>
+    <p>Conte o que aconteceu. A mensagem abre no WhatsApp do responsável pelo jogo; você vê tudo antes de enviar e nada sai sem o seu toque.</p>
+    <label for="rlDesc"><b>O que aconteceu?</b></label>
+    <textarea id="rlDesc" rows="4" style="width:100%;box-sizing:border-box;font:inherit;padding:8px;border-radius:10px;border:1px solid #9aa" placeholder="Ex.: no capítulo 8 a obra parou e não consigo fazer nada"></textarea>
+    <label class="toggle-linha"><input type="checkbox" id="rlDiag" checked> Incluir o diagnóstico (versão, aparelho, capítulo, saldo, erros)</label><br>
+    <label class="toggle-linha"><input type="checkbox" id="rlAc" checked> Incluir os últimos acontecimentos do jogo</label>
+    <p class="note">Vai junto (você pode editar no WhatsApp):</p>
+    <pre id="rlPrev" style="white-space:pre-wrap;max-height:160px;overflow:auto;font-size:12px;background:#f3efe6;color:#222;padding:8px;border-radius:8px" tabindex="0" aria-label="Texto que será enviado"></pre>
+    <div class="linha2"><button class="btn" id="rlEnviar">Abrir no WhatsApp</button><button class="plain" id="rlCopiar"><span>Copiar texto</span></button></div>
+    <button class="plain" id="rlFechar"><span>Cancelar</span></button>`);
+  const $r = k => document.getElementById(k), txt = () => textoRelato($r("rlDesc").value, $r("rlDiag").checked, $r("rlAc").checked, id);
+  const atualizar = () => { $r("rlPrev").textContent = txt(); };
+  ["rlDesc", "rlDiag", "rlAc"].forEach(k => $r(k).addEventListener("input", atualizar)); ["rlDiag", "rlAc"].forEach(k => $r(k).addEventListener("change", atualizar)); atualizar();
+  $r("rlEnviar").onclick = () => { abrirExterno(`https://wa.me/${WHATS_SUPORTE}?text=${encodeURIComponent(txt())}`); hideModal(); toast(`Relato ${id} pronto no WhatsApp.`); };
+  $r("rlCopiar").onclick = async () => { try { await navigator.clipboard.writeText(txt()); toast("Texto copiado."); } catch (e) { const r = document.createRange(); r.selectNodeContents($r("rlPrev")); const s = getSelection(); s.removeAllRanges(); s.addRange(r); toast("Texto selecionado: copie com o menu do aparelho."); } };
+  $r("rlFechar").onclick = hideModal;
+  setTimeout(() => { const d = $r("rlDesc"); if (d) d.focus(); }, 60);
+}
+
+// ---------- aviso de nova versão (APK; na web o próprio site já atualiza) ----------
+const CHAVE_AVISO_VERSAO = "mercadinho-aviso-versao";
+const versaoMaior = (a, b) => { const x = String(a).split(".").map(Number), y = String(b).split(".").map(Number); for (let i = 0; i < Math.max(x.length, y.length); i++) { if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); } return false; };
+function verificarNovaVersao() {
+  if (!ehNativo() || MODO === "previa") return;
+  const ctl = window.AbortController ? new AbortController() : null; if (ctl) setTimeout(() => ctl.abort(), 6000);
+  fetch(SITE_JOGO + "versao.json?t=" + Date.now(), { cache: "no-store", signal: ctl ? ctl.signal : undefined }).then(r => r.ok ? r.json() : null).then(v => {
+    if (!v || !v.versao || !versaoMaior(v.versao, APP_VERSAO)) return;
+    let visto = null; try { visto = localStorage.getItem(CHAVE_AVISO_VERSAO); } catch (e) {}
+    banner(`⬆️ Versão ${v.versao} disponível`, "#1f5fa8");
+    if (visto === v.versao) return;
+    try { localStorage.setItem(CHAVE_AVISO_VERSAO, v.versao); } catch (e) {}
+    const mostrar = () => { showModal(`<h2>Nova versão: ${v.versao}</h2><p>${v.novidades || "Há uma versão nova do Mercadinho da Esquina."}</p><p>Baixe e instale <b>por cima</b> da atual, sem desinstalar: seu progresso continua.</p>
+      <div class="linha2"><button class="btn" id="nvBaixar">Abrir a página de download</button><button class="plain" id="nvDepois"><span>Depois</span></button></div>`);
+      document.getElementById("nvBaixar").onclick = () => { hideModal(); abrirExterno(v.pagina || SITE_JOGO + "baixar/"); };
+      document.getElementById("nvDepois").onclick = hideModal; };
+    if (document.getElementById("modal").hidden) mostrar(); else filaModal.push(mostrar);
+  }).catch(() => {});
+}
+
+// ---------- painel de trapaças ----------
+const hashDev = s => { let h = 2166136261; for (const c of s) { h ^= c.charCodeAt(0); h = Math.imul(h, 16777619) >>> 0; } return h; };
+let devToques = 0, devT = 0, devAberto = false;
+function toqueVersao() {
+  const t = Date.now(); devToques = t - devT < 1500 ? devToques + 1 : 1; devT = t;
+  if (devToques >= 7) { devToques = 0; if (devAberto) abrirPainelDev(); else pedirCodigoDev(); }
+}
+function pedirCodigoDev() {
+  closeSheet();
+  showModal(`<h2>Modo desenvolvedor</h2><label for="devCod">Código</label><input id="devCod" type="password" autocomplete="off" style="width:100%;box-sizing:border-box;font:inherit;padding:8px;border-radius:10px;border:1px solid #9aa">
+    <div class="linha2"><button class="btn" id="devOk">Entrar</button><button class="plain" id="devNao"><span>Cancelar</span></button></div>`);
+  const ok = () => { if (hashDev("mercadinho:" + document.getElementById("devCod").value.trim()) === DEV_HASH) { devAberto = true; hideModal(); setTimeout(abrirPainelDev, 160); } else toast("Código incorreto."); };
+  document.getElementById("devOk").onclick = ok; document.getElementById("devCod").addEventListener("keydown", e => { if (e.key === "Enter") ok(); });
+  document.getElementById("devNao").onclick = hideModal;
+  setTimeout(() => { const d = document.getElementById("devCod"); if (d) d.focus(); }, 60);
+}
+function marcarTrapaca(oque) {
+  S.trapacas = (S.trapacas || []).concat([{ oque, dia: S.day, em: Date.now() }]).slice(-30);
+  if (NA_CARREIRA && CARREIRA) CARREIRA.trapacas = (CARREIRA.trapacas || 0) + 1;
+}
+function devDinheiro(v, definir) {
+  marcarTrapaca(definir ? `definir saldo ${v}` : `+${v}`);
+  S.money = definir ? v : S.money + v; if (!definir && v > 0) S.earned += 0;    // não conta como faturamento
+  save(); toast(`Saldo: M ${fmt(S.money)}`); abrirPainelDev();
+}
+function devAvancar(n) { marcarTrapaca(`avançar ${n} dia(s)`); hideModal(); for (let i = 0; i < n; i++) endDay(); save(); toast(`${n} dia(s) avançado(s).`); }
+function devConcluir() { if (!NA_CARREIRA) return; marcarTrapaca(`concluir capítulo ${FASE}`); hideModal(); concluirFase(true); save(); }
+function devResgate() { if (!(NA_CARREIRA && FASE === "grande")) return; marcarTrapaca("resgate da obra"); const r = aplicarResgate("trapaca"); hideModal(); if (r) mostrarResgate(r); else toast("A previsão já fecha: nada a completar."); }
+function devIrCapitulo(id, recomecar) {
+  if (!NA_CARREIRA || !FASES[id]) return;
+  marcarTrapaca(`${recomecar ? "recomeçar" : "ir para"} ${id}`); save();
+  try { const atual = localStorage.getItem(CHAVE_CARREIRA); if (atual) localStorage.setItem("mercadinho-carreira-v1-copia-antes-trapaca", atual); } catch (e) {}
+  const alvo = FASES[id].ordem;
+  Object.keys(FASES).forEach(f => {
+    const o = FASES[f].ordem;
+    if (o < alvo && !(CARREIRA.fases[f] && CARREIRA.fases[f].concluida)) CARREIRA.fases[f] = { concluida: true, dia: 1, xp: 0, rep: 3.5, atendidos: 0, faturamento: 0, conquistas: 0, em: Date.now(), trapaca: true };
+    if (recomecar && o >= alvo) { delete CARREIRA.lojas[f]; delete CARREIRA.fases[f]; }
+  });
+  if (recomecar || FASES[CARREIRA.fase].ordem < alvo) CARREIRA.fase = id;
+  CARREIRA.convites[id] = CARREIRA.convites[id] || Date.now();
+  CARREIRA.ativa = id; gravarCarreira();
+  window.__semSalvar = true; paused = true; location.reload();
+}
+function abrirPainelDev() {
+  closeSheet();
+  const caps = NA_CARREIRA ? Object.keys(FASES).sort((a, b) => FASES[a].ordem - FASES[b].ordem) : [];
+  showModal(`<h2>🛠️ Modo desenvolvedor</h2><p class="note">Saldo agora: <b>M ${fmt(S.money)}</b> · dia ${S.day}. Todo uso fica marcado na partida.</p>
+    <div class="linha2"><button class="btn mini" data-dv="1000">+M 1.000</button><button class="btn mini" data-dv="10000">+M 10.000</button><button class="btn mini" data-dv="100000">+M 100.000</button></div>
+    <label for="devSaldo">Definir saldo</label><div class="linha2"><input id="devSaldo" type="number" inputmode="numeric" style="font:inherit;padding:6px;border-radius:8px;border:1px solid #9aa;width:9em"><button class="plain mini" id="devDef"><span>Definir</span></button><button class="plain mini" id="devZera"><span>Zerar dívida</span></button></div>
+    <div class="linha2"><button class="plain mini" id="devD1"><span>Avançar 1 dia</span></button><button class="plain mini" id="devD7"><span>Avançar 7 dias</span></button></div>
+    ${NA_CARREIRA ? `<div class="linha2"><button class="plain mini" id="devConc"><span>Concluir o capítulo atual</span></button>${FASE === "grande" ? '<button class="plain mini" id="devResg"><span>Resgate da obra</span></button>' : ""}</div>
+    <p class="note"><b>Escolher capítulo.</b> "Ir" abre a loja (ou cria, se ainda não existe) e marca os anteriores como concluídos sem XP. "Recomeçar" apaga este capítulo e os seguintes e começa do zero. Uma cópia do save é guardada antes.</p>
+    ${caps.map(id => `<div class="req"><span>${FASE_CFG[id] ? `${FASE_CFG[id].capitulo}. ${FASE_CFG[id].titulo}` : id}${id === FASE ? " (aberto)" : ""}</span><span><button class="plain mini" data-ir="${id}"><span>Ir</span></button> <button class="plain mini" data-rec="${id}"><span>Recomeçar</span></button></span></div>`).join("")}` : ""}
+    <button class="btn" id="devFechar">Fechar</button>`);
+  const d = document.getElementById("dialog");
+  d.querySelectorAll("[data-dv]").forEach(b => b.onclick = () => devDinheiro(+b.dataset.dv));
+  document.getElementById("devDef").onclick = () => { const v = Math.round(+document.getElementById("devSaldo").value); if (isFinite(v)) devDinheiro(v, true); };
+  document.getElementById("devZera").onclick = () => devDinheiro(Math.max(0, S.money), true);
+  document.getElementById("devD1").onclick = () => devAvancar(1); document.getElementById("devD7").onclick = () => devAvancar(7);
+  const c = document.getElementById("devConc"); if (c) c.onclick = devConcluir;
+  const rg = document.getElementById("devResg"); if (rg) rg.onclick = devResgate;
+  d.querySelectorAll("[data-ir]").forEach(b => b.onclick = () => devIrCapitulo(b.dataset.ir, false));
+  d.querySelectorAll("[data-rec]").forEach(b => b.onclick = () => { if (b.dataset.armado) devIrCapitulo(b.dataset.rec, true); else { b.dataset.armado = 1; b.firstChild.textContent = "Toque de novo"; } });
+  document.getElementById("devFechar").onclick = hideModal;
+}
+
+// entradas nas Configurações: relatar problema e versão (7 toques abre o modo desenvolvedor)
+{ const b0 = buildSettings;
+  buildSettings = body => {
+    b0(body);
+    const r = el("button", "plain", `${iconSvg("i-help")}<span>Relatar problema</span>`); r.onclick = abrirRelato;
+    body.insertBefore(r, body.querySelector(".danger") ? body.querySelector(".danger").previousSibling : null);
+    const v = el("button", "plain mini", `<span>Mercadinho da Esquina · versão ${APP_VERSAO}</span>`); v.setAttribute("aria-label", `Versão ${APP_VERSAO}`); v.onclick = toqueVersao; body.appendChild(v);
+  }; }
+if (MODO !== "menu") setTimeout(verificarNovaVersao, 4000);
 </script>
 <script>
 "use strict";
