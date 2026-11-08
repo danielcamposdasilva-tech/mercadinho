@@ -1727,7 +1727,14 @@ function passBy(c, lostWhy) {
   const y = pkY();
   c.state = "pass"; c.path = [{ x: c.x + 16, y: y.lanePass }, { x: WORLD.x1 + 60, y: y.lanePass }];
   if (lostWhy === "price") { S.today.park.lostPrice++; float(c.x + 10, c.y - 14, "Caro! 💸", "#c9513a"); }
-  if (lostWhy === "full") { S.today.park.lostFull++; changeRep(-0.02); float(c.x + 10, c.y - 14, "Lotado 😕", "#c9513a"); toastOnce("parkfull", "Estacionamento lotado! Compre mais vagas ou contrate atendentes."); }
+  if (lostWhy === "full") { S.today.park.lostFull++; changeRep(-0.02); avisoDesistiu(c); }
+}
+// 1.4: só diz "lotado" quando não há vaga livre; com vagas sobrando, o gargalo é a fila da cancela
+const vagaLivre = () => STALLS.some(s => !s.car && !s.res);
+function avisoDesistiu(c) {
+  const filaCancela = vagaLivre() && S.park.staff < PK.maxStaff;
+  if (filaCancela) { float(c.x + 10, c.y - 14, "Fila 😕", "#c9513a"); toastOnce("parkfila", `Fila na cancela do estacionamento: ainda há vagas livres, mas ${S.park.staff ? "a cancela não dá conta" : "não há atendente"}. Contrate ou treine atendentes.`); }
+  else { float(c.x + 10, c.y - 14, "Lotado 😕", "#c9513a"); toastOnce("parkfull", S.park.staff >= PK.maxStaff || !CANCELA ? "Estacionamento lotado: todas as vagas ocupadas ou reservadas (em amarelo) para carros entrando. Amplie o estacionamento." : "Estacionamento lotado! Compre mais vagas ou contrate atendentes."); }
 }
 function qPos(i) { const y = pkY(); return i === 0 ? { x: PK.EX, y: y.gateStop } : { x: PK.EX - 30 * i, y: y.laneIn }; }
 function updateParking(dt) {
@@ -1752,7 +1759,7 @@ function updateParking(dt) {
     if (!c) { inQ.splice(i, 1); continue; }
     if (c.wait > PK.carWait && !c.stall && gates.in.car !== c.id) {
       inQ.splice(i, 1);
-      if (i === 0 && c.y < y.laneIn - 2) { c.state = "pass"; c.path = [{ x: PK.EX, y: y.laneIn }, { x: WORLD.x1 + 60, y: y.laneIn }]; S.today.park.lostFull++; changeRep(-0.02); float(c.x + 10, c.y - 14, "Lotado 😕", "#c9513a"); }
+      if (i === 0 && c.y < y.laneIn - 2) { c.state = "pass"; c.path = [{ x: PK.EX, y: y.laneIn }, { x: WORLD.x1 + 60, y: y.laneIn }]; S.today.park.lostFull++; changeRep(-0.02); avisoDesistiu(c); }
       else passBy(c, "full");
     }
   }
@@ -3491,7 +3498,8 @@ function tickLocacao(L, cfg, dt) {
 function diaLocacao(L, cfg, extraReceita) {
   let receita = 0, atrasou = 0; const fins = [];
   ocupadas(L).forEach(u => {
-    const o = u.ocup, devido = o.aluguel + (o.pct ? o.vendas * o.pct : 0);
+    const o = u.ocup, car = o.carencia > 0, devido = (car ? 0 : o.aluguel) + (o.pct ? o.vendas * o.pct : 0);   // 1.4: carência negociada não cobra o aluguel fixo
+    if (car) o.carencia--;
     if (Math.random() < o.risco) { o.divida += devido; o.atrasos++; atrasou++; }
     else { receita += devido + o.divida; o.divida = 0; if (o.atrasos > 0 && Math.random() < 0.5) o.atrasos--; }
     o.vendas = 0; o.resta--;
@@ -3523,7 +3531,7 @@ function cartaoUnidade(L, u, cfg, onMuda) {
   const T = TAMANHOS[u.tam], o = u.ocup, R = o && RAMOS[o.ramo];
   const c = el("div", "card proposta", o
     ? `<div class="req"><span>${R.ic} <b>${o.nome}</b> <span class="tag">${u.nome || T.nome}</span></span><b>M ${fmt(o.aluguel)}/dia${o.pct ? ` + ${Math.round(o.pct * 100)}%` : ""}</b></div>
-       <p class="note">${R.nome} · contrato: ${o.resta > 0 ? `mais ${o.resta} dia(s)` : "<b>vencido, espera renovação</b>"}${o.divida > 0 ? ` · <span class="tag ruim">deve M ${fmt(o.divida)} (${o.atrasos} atraso${o.atrasos === 1 ? "" : "s"})</span>` : ""}</p>`
+       <p class="note">${R.nome}${o.carencia > 0 ? ` · <span class="tag aviso">carência: mais ${o.carencia} sem aluguel fixo</span>` : ""} · contrato: ${o.resta > 0 ? `mais ${o.resta} dia(s)` : "<b>vencido, espera renovação</b>"}${o.divida > 0 ? ` · <span class="tag ruim">deve M ${fmt(o.divida)} (${o.atrasos} atraso${o.atrasos === 1 ? "" : "s"})</span>` : ""}</p>`
     : `<div class="req"><span>🏷️ <b>${u.nome || T.nome}</b> <span class="tag aviso">vaga</span></span><b>custa M ${fmt(cfg.custoVaga)}/dia</b></div><p class="note">Cabe: ${T.ramos.filter(r => !cfg.ramos || cfg.ramos.includes(r)).map(r => RAMOS[r].nome.toLowerCase()).join(", ")}.</p>`);
   if (o && o.atrasos >= 2) { const b = el("button", "plain mini", `<span>Encerrar contrato por falta de pagamento</span>`); b.onclick = () => { if (despejar(L, u.id)) { toast(`${o.nome} saiu. A dívida de M ${fmt(o.divida)} ficou para a cobrança.`); onMuda(); } }; c.appendChild(b); }
   return c;
@@ -3574,17 +3582,19 @@ const AT_CFG = {
   fardo: 6, palete: 8, precoFardo: 0.72, custoFardo: 0.8,
   posicoes: [6, 9], posCusto: 2500, depCap: [8, 12, 16], depCusto: [1800, 4000],
   docas: [1, 2], docaCusto: 3500, op: { contratar: 300, salario: 22, max: 4 }, balcao: { contratar: 250, salario: 18, max: 2 },
+  nivelCusto: 1200, niveisMax: 2, isolar: 4,              // 1.4: estoque vertical (pulmão aéreo) por posição
   chegada: 14, permanencia: 18, multa: 35, descarga: 3.5, levar: 5, atendimento: 3.2, paciencia: 9, pacienciaFila: 22,
 };
 const AT_ATIVO = NA_CARREIRA && FASE === "cajueiro";
 const GAL_CFG = { ramos: TAMANHOS.sala.ramos, cadaProposta: 40, validade: 45, maxPropostas: 3, custoFixo: 20, custoVaga: 10, custoOcupada: 4 };
 const novoAtac = () => ({ nPos: 6, pos: Array.from({ length: 9 }, () => ({ sec: null, fardos: 0 })), dep: {}, depLvl: 0, docas: 1, ops: 2, opsDoca: 1, balcao: 1,
   carretas: [], transito: [], seq: 1, auto: false, hoje: novoHojeAt(), dias: [], totFardos: 0, totMultas: 0 });
-const novoHojeAt = () => ({ fardos: 0, receita: 0, custo: 0, comerciantes: 0, perdidos: 0, multas: 0, multaValor: 0, paletes: 0 });
+const novoHojeAt = () => ({ fardos: 0, receita: 0, custo: 0, comerciantes: 0, perdidos: 0, multas: 0, multaValor: 0, paletes: 0, descidas: 0, subidas: 0, urgentes: 0, isoladoS: 0 });
 function at() {
   if (!S.atac) S.atac = novoAtac();
   const a = S.atac; a.dep = a.dep || {}; a.soltos = a.soltos || {}; a.carretas = a.carretas || []; a.transito = a.transito || []; a.hoje = Object.assign(novoHojeAt(), a.hoje || {}); a.dias = a.dias || [];
   while (a.pos.length < 9) a.pos.push({ sec: null, fardos: 0 });
+  a.pos.forEach(p => { p.niveis = p.niveis || 0; p.alto = p.alto || 0; }); a.pulmao = a.pulmao || "preventiva";
   return a;
 }
 function galeria() { if (!S.galeria) S.galeria = novoConjunto([1, 2, 3, 4].map(i => ({ id: "g" + i, tam: "sala", nome: `Sala ${i}` }))); return S.galeria; }
@@ -3595,6 +3605,26 @@ const depCapAt = () => AT_CFG.depCap[at().depLvl];
 const depUsado = () => Object.values(at().dep).reduce((a, n) => a + n, 0);
 const paletesChegando = () => at().transito.reduce((a, p) => a + p.n, 0) + at().carretas.reduce((a, c) => a + c.restante, 0);
 const noCaminho = id => at().transito.reduce((s, p) => s + (p.itens[id] || 0), 0) + at().carretas.reduce((s, c) => s + (c.itens[id] || 0), 0);
+// 1.4: estoque vertical. Cada posição pode ter até 2 níveis de porta-paletes no alto; o alto não está à venda.
+const altoLivre = id => at().pos.slice(0, at().nPos).reduce((s, p) => s + (p.sec === id ? Math.max(0, p.niveis - p.alto - (p.subindo ? 1 : 0)) : 0), 0);
+// trecho isolado em frente à posição durante a manobra: fica dentro da coluna, nunca no corredor (rota acessível livre)
+const zonaIsolada = k => { const pp = posPalete(k); return { x: pp.x - 3, y: pp.stand - 16, w: pp.w + 6, h: 24 }; };
+// preventiva: no pico só desce do alto se o depósito não tiver palete daquele setor (posição vazia é pior que a manobra)
+const podeDescer = (a, p) => a.pulmao === "urgente" || !isRush() || (p && !(a.dep[p.sec] > 0));
+function totalFardosAt(id) {            // conferência: tudo o que existe de um setor, em fardos
+  const a = at(), P8 = AT_CFG.palete;
+  let n = a.pos.reduce((s, p) => s + (p.sec === id ? p.fardos + p.alto * P8 : 0), 0) + (a.dep[id] || 0) * P8 + noCaminho(id) * P8 + (a.soltos[id] || 0);
+  n += empilhadeiras.reduce((s, e) => s + (e.carga === id ? P8 : 0), 0);
+  n += comerciantes.reduce((s, c) => s + c.plano.reduce((t, it) => t + (it.sec === id ? it.got : 0), 0), 0);
+  return n;
+}
+function instalarNivel(k) {
+  const a = at(), p = a.pos[k]; if (!p || k >= a.nPos || p.niveis >= AT_CFG.niveisMax) return false;
+  if (!pagarContratacao(AT_CFG.nivelCusto, "um nível de porta-paletes no alto")) return false;
+  p.niveis++; banner(`🏗️ Posição ${k + 1}: ${p.niveis} nível(is) no alto`, "#e8711a"); anunciar(`Posição ${k + 1} agora guarda ${p.niveis} palete(s) no alto.`); save(); lastSig = ""; renderSheet(); return true;
+}
+function alternarPulmao() { const a = at(); a.pulmao = a.pulmao === "urgente" ? "preventiva" : "urgente";
+  toast(a.pulmao === "urgente" ? "Descida do alto também no horário de pico: mais rápida, com corredor isolado e alguma espera." : "Descida do alto só fora do pico; no pico, a empilhadeira traz do depósito."); save(); lastSig = ""; renderSheet(); }
 function guardarSoltos(a, sec, n) { a.soltos[sec] = (a.soltos[sec] || 0) + n; while (a.soltos[sec] >= AT_CFG.palete) { a.soltos[sec] -= AT_CFG.palete; a.dep[sec] = (a.dep[sec] || 0) + 1; } }
 function autoTxt() {
   const a = at(), st = a.autoSt; if (!a.auto) return "desligada";
@@ -3665,6 +3695,8 @@ function devolverTarefa(e) {        // a carga em trânsito volta para onde esta
   const a = at(); if (!e.tarefa) return;
   if (e.tarefa.tipo === "descarregar" && e.carga) { const c = a.carretas.find(x => x.id === e.tarefa.carreta); if (c) { c.itens[e.carga] = (c.itens[e.carga] || 0) + 1; c.restante++; } else a.dep[e.carga] = (a.dep[e.carga] || 0) + 1; }
   if (e.tarefa.tipo === "levar" && e.carga) { a.dep[e.carga] = (a.dep[e.carga] || 0) + 1; const p = a.pos[e.tarefa.pos]; if (p) p.reservada = false; }
+  if (e.tarefa.tipo === "subir") { if (e.carga) a.dep[e.carga] = (a.dep[e.carga] || 0) + 1; const p = a.pos[e.tarefa.pos]; if (p) { p.subindo = false; p.isolada = false; } }
+  if (e.tarefa.tipo === "descer") { const p = a.pos[e.tarefa.pos]; if (p) { p.reservada = false; p.isolada = false; } }
   e.tarefa = null; e.carga = null;
 }
 function passoEmpilhadeira(e, dt, a) {
@@ -3676,12 +3708,32 @@ function passoEmpilhadeira(e, dt, a) {
         const d = DOCA(c.doca); e.path = [{ x: e.x, y: 118 }, { x: d.x + 29, y: 118 }]; }
       else if (Math.abs(e.x - P.whDoor.x) > 2 || Math.abs(e.y - (P.whDoor.y + 6)) > 2) { if (!e.path.length) e.path = [{ x: P.whDoor.x, y: P.whDoor.y + 6 }]; follow(e, sp, dt); }
     } else {
-      const k = a.pos.findIndex((p, i) => i < a.nPos && p.sec && p.fardos === 0 && !p.reservada && (a.dep[p.sec] || 0) > 0);
-      if (k >= 0) { const p = a.pos[k], pp = posPalete(k), cor = corredorPara(P.whDoor.x, pp.cx); p.reservada = true; a.dep[p.sec]--; e.carga = p.sec; e.tarefa = { tipo: "levar", pos: k };
+      const kd = a.pos.findIndex((p, i) => i < a.nPos && p.sec && p.fardos === 0 && !p.reservada && p.alto > 0 && podeDescer(a, p));
+      const ks = kd < 0 && !isRush() ? a.pos.findIndex((p, i) => i < a.nPos && p.sec && p.fardos > 0 && !p.subindo && p.niveis > p.alto && (a.dep[p.sec] || 0) > 1) : -1;   // sobe só o que sobra: 1 palete fica no depósito
+      const k = kd >= 0 ? -1 : a.pos.findIndex((p, i) => i < a.nPos && p.sec && p.fardos === 0 && !p.reservada && (a.dep[p.sec] || 0) > 0);
+      if (kd >= 0) { const p = a.pos[kd], pp = posPalete(kd), cor = corredorPara(e.x, pp.cx); p.reservada = true; e.tarefa = { tipo: "descer", pos: kd }; e.t = 0;
+        e.path = [{ x: cor, y: e.y }, { x: cor, y: pp.stand - 4 }, { x: pp.cx, y: pp.stand - 4 }]; }
+      else if (k < 0 && ks >= 0) { const p = a.pos[ks], pp = posPalete(ks), cor = corredorPara(P.whDoor.x, pp.cx); p.subindo = true; a.dep[p.sec]--; e.carga = p.sec; e.tarefa = { tipo: "subir", pos: ks }; e.t = 0;
+        e.path = [{ x: P.whDoor.x, y: P.whDoor.y + 6 }, { x: cor, y: P.whDoor.y + 6 }, { x: cor, y: pp.stand - 4 }, { x: pp.cx, y: pp.stand - 4 }]; }
+      else if (k >= 0) { const p = a.pos[k], pp = posPalete(k), cor = corredorPara(P.whDoor.x, pp.cx); p.reservada = true; a.dep[p.sec]--; e.carga = p.sec; e.tarefa = { tipo: "levar", pos: k };
         e.path = [{ x: P.whDoor.x, y: P.whDoor.y + 6 }, { x: cor, y: P.whDoor.y + 6 }, { x: cor, y: pp.stand - 4 }, { x: pp.cx, y: pp.stand - 4 }]; }
       else if (!e.path.length && Math.abs(e.x - P.whDoor.x) > 2) e.path = routeTo(e, P.whDoor.x, P.whDoor.y + 6);
       if (!e.tarefa) follow(e, sp, dt);
     }
+    return;
+  }
+  if (e.tarefa.tipo === "descer" || e.tarefa.tipo === "subir") {         // manobra no alto: isola o trecho em frente à posição por alguns segundos
+    if (!follow(e, sp, dt)) return;
+    const k = e.tarefa.pos, p = a.pos[k];
+    if (!p || !p.sec || (e.tarefa.tipo === "subir" && p.sec !== e.carga)) { devolverTarefa(e); return; }
+    if (!p.isolada) {
+      if (e.tarefa.tipo === "descer" ? !podeDescer(a, p) : isRush()) { if (e.tarefa.tipo === "descer") { p.reservada = false; e.tarefa = null; } else devolverTarefa(e); return; }   // preventiva: o pico começou, fica para depois
+      if (comerciantes.some(c => c.alvo === k && c.estado === "pegando")) return;      // espera quem está pegando fardos sair do trecho
+      p.isolada = true; e.t = 0; e.tarefa.semDeposito = isRush() && a.pulmao !== "urgente"; anunciar(`Posição ${k + 1} isolada por ${AT_CFG.isolar} segundos para a empilhadeira. Os corredores continuam livres.`); }
+    e.t += dt; a.hoje.isoladoS += dt; if (e.t < AT_CFG.isolar) return;
+    if (e.tarefa.tipo === "descer") { if (p.alto > 0) { p.alto--; p.fardos += AT_CFG.palete; a.hoje.descidas++; if (e.tarefa.semDeposito) a.hoje.semDeposito = (a.hoje.semDeposito || 0) + 1; if (isRush()) { a.hoje.urgentes++; if (comerciantes.some(c => c.alvo === k && c.estado !== "saindo")) changeRep(-0.01); } } p.reservada = false; }
+    else { p.alto++; e.carga = null; a.hoje.subidas++; p.subindo = false; }
+    p.isolada = false; e.tarefa = null; const cor = corredorPara(e.x, P.whDoor.x); e.path = [{ x: cor, y: e.y }, { x: cor, y: P.whDoor.y + 6 }, { x: P.whDoor.x, y: P.whDoor.y + 6 }]; lastSig = "";
     return;
   }
   if (e.tarefa.tipo === "descarregar") {
@@ -3737,7 +3789,7 @@ function tickComerciantes(dt, a) {
     else if (c.estado === "andando" && chegou) c.estado = "pegando";
     else if (c.estado === "pegando") {
       const it = c.plano[c.passo], p = a.pos[c.alvo];
-      if (p && p.sec === it.sec && p.fardos > 0) { c.espera += dt; if (c.espera >= 0.8) { c.espera = 0; p.fardos--; it.got++; if (it.got >= it.q) { c.passo++; proximoComerciante(c, a); } } }
+      if (p && p.sec === it.sec && p.fardos > 0 && !p.isolada) { c.espera += dt; if (c.espera >= 0.8) { c.espera = 0; p.fardos--; it.got++; if (it.got >= it.q) { c.passo++; proximoComerciante(c, a); } } }
       else { c.espera += dt; if (c.espera > AT_CFG.paciencia || (it.got > 0 && c.espera > 2)) { if (!it.got) float(c.x, c.y - 18, "😕", "#c9513a"); c.passo++; proximoComerciante(c, a); } }
     } else if (c.estado === "fila") {
       const pos = fila.indexOf(c); if (chegou) { const alvo = { x: b.serve.x - pos * 20, y: b.serve.y }; if (Math.abs(c.x - alvo.x) > 1) c.path = [alvo]; }
@@ -3767,7 +3819,7 @@ function tickAtacado(dt) {
     const secs = [...new Set(a.pos.slice(0, a.nPos).map(p => p.sec).filter(Boolean))];
     let st = { tipo: "ok" };
     for (const id of secs) { const tem = (a.dep[id] || 0) + noCaminho(id);
-      if (tem >= 2) continue;
+      if (tem >= 2 + altoLivre(id)) continue;
       const c = custoPalete(id), falta = c + bills() + 60 - S.money;
       if (depUsado() + paletesChegando() + 1 > depCapAt()) { st = { tipo: "cheio", sec: id }; continue; }
       if (falta >= 0) { if (st.tipo === "ok") st = { tipo: "saldo", sec: id, falta }; continue; }
@@ -3781,7 +3833,7 @@ function fecharGaleria() {           // antes do fechamento: aluguéis e custos 
 }
 function fimDoDiaAtacado(L) {
   const a = at(), h = a.hoje, tot = h.comerciantes;
-  const d = { dia: L.day, fardos: h.fardos, receita: Math.round(h.receita), custo: Math.round(h.custo), comerciantes: tot, perdidos: h.perdidos, multas: h.multas, paletes: h.paletes };
+  const d = { dia: L.day, fardos: h.fardos, receita: Math.round(h.receita), custo: Math.round(h.custo), comerciantes: tot, perdidos: h.perdidos, multas: h.multas, paletes: h.paletes, descidas: h.descidas, subidas: h.subidas, urgentes: h.urgentes, isoladoS: Math.round(h.isoladoS) };
   a.dias.unshift(d); a.dias.length = Math.min(a.dias.length, 5); L.atacado = d; a.hoje = novoHojeAt();
 }
 
@@ -3789,7 +3841,9 @@ function fimDoDiaAtacado(L) {
 function atribuirPosicao(k, d) {
   const a = at(), p = a.pos[k]; if (!p || k >= a.nPos) return;
   const opcoes = [null, ...openSectors().map(s => s.id)], i = opcoes.indexOf(p.sec), novo = opcoes[(i + d + opcoes.length) % opcoes.length];
-  if (p.fardos > 0 && p.sec) { guardarSoltos(a, p.sec, p.fardos); p.fardos = 0; }   // 1.3: fardos voltam como fardos (antes arredondava para palete inteiro)
+  if (p.reservada || p.subindo || p.isolada) { toast("A empilhadeira está trabalhando nesta posição. Tente em alguns segundos."); return; }
+  if (p.fardos > 0 && p.sec) { guardarSoltos(a, p.sec, p.fardos); p.fardos = 0; }
+  if (p.alto > 0 && p.sec) { a.dep[p.sec] = (a.dep[p.sec] || 0) + p.alto; p.alto = 0; }     // paletes do alto descem para o depósito   // 1.3: fardos voltam como fardos (antes arredondava para palete inteiro)
   p.sec = novo; anunciar(`Posição ${k + 1}: ${novo ? nomeSetor(novo) : "livre"}.`); save(); lastSig = ""; renderSheet();
 }
 function mudarOps(d) {
@@ -3829,6 +3883,11 @@ function desenharAtacado() {
       for (let j = 0; j < n; j++) { const cx = r.x + 1 + (j % 4) * 7, cy = r.y + r.h - 11 - Math.floor(j / 4) * 7; rrs(cx, cy, 7, 6, 1, d.color, shade(d.color, .6), .7); }
       rr(r.cx - 9, r.y - 9, 18, 10, 4, p.fardos ? "#fff" : "#c9513a"); text(p.fardos ? `${d.ic}${p.fardos}` : "VAZIO", r.cx, r.y - 1.5, p.fardos ? 6.5 : 5.5, p.fardos ? "#333" : "#fff");
     } else text("livre", r.cx, r.y + 12, 6.5, "#8e7350");
+    if (p.niveis) { ctx.strokeStyle = "#5d6d7e"; ctx.lineWidth = 1.4; ctx.strokeRect(r.x - 1, r.y - 22, r.w + 2, 12 * p.niveis - 2 > 0 ? 11 : 11);
+      for (let j = 0; j < p.niveis; j++) { const yy = r.y - 21 + 0; const xx = r.x + 1 + j * (r.w / 2); rr(xx, yy, r.w / 2 - 3, 9, 1, j < p.alto && p.sec ? secDefAt(p.sec).color : "rgba(93,109,126,.18)"); }
+      text("ALTO", r.x + r.w + 9, r.y - 14, 5, "#5d6d7e"); }
+    if (p.isolada) { const z = zonaIsolada(k); ctx.strokeStyle = "#f57c00"; ctx.setLineDash([3, 2]); ctx.strokeRect(z.x, z.y, z.w, z.h); ctx.setLineDash([]);
+      [z.x + 2, z.x + z.w - 2].forEach(x => { ctx.fillStyle = "#f57c00"; ctx.beginPath(); ctx.moveTo(x, z.y + z.h - 8); ctx.lineTo(x + 3, z.y + z.h); ctx.lineTo(x - 3, z.y + z.h); ctx.fill(); }); }
   }
   // balcão do atacado
   const b = BALCAO_AT(); rr(b.x, b.y, b.w, b.h, 5, "#e8711a"); rr(b.x + 3, b.y + 3, b.w - 6, 9, 3, "#fff3e6"); text("CAIXA ATACADO", b.x + b.w / 2, b.y + 10, 6.5, "#b8530c", "center", 800);
@@ -3882,6 +3941,16 @@ function buildAtacado(body) {
     pc.appendChild(passo(`Posição ${k + 1}`, () => { const q = at().pos[k]; return q.sec ? `${secDefAt(q.sec).ic} ${nomeSetor(q.sec)} · ${q.fardos} fardos` : "livre"; }, () => atribuirPosicao(k, -1), () => atribuirPosicao(k, 1), `setor da posição ${k + 1}`)); }
   if (a.nPos < AT_CFG.posicoes[1]) { const b = el("button", "btn", `Ampliar para ${AT_CFG.posicoes[1]} posições por M ${fmt(AT_CFG.posCusto)}`); b.onclick = () => ampliar("pos"); pc.appendChild(b); }
   body.appendChild(pc);
+  // estoque vertical
+  body.appendChild(el("div", "sec-title", "Estoque no alto (porta-paletes)"));
+  const vc = el("div", "card", `<p class="note">Cada posição pode guardar até ${AT_CFG.niveisMax} paletes no alto (M ${fmt(AT_CFG.nivelCusto)} por nível). O alto não está à venda: quando a posição esvazia, a empilhadeira desce o palete em ${AT_CFG.isolar} s, sem ir ao depósito, isolando só o trecho em frente à posição (os corredores continuam livres). Fora do pico, ela sobe paletes do depósito para o alto. A compra automática também abastece o alto.</p>`);
+  const pb = el("button", "plain toggle", `<span>Descer do alto no horário de pico: <b>${a.pulmao === "urgente" ? "sim (urgente)" : "não (só fora do pico)"}</b></span>`); pb.setAttribute("aria-pressed", String(a.pulmao === "urgente")); pb.onclick = alternarPulmao; vc.appendChild(pb);
+  for (let k = 0; k < a.nPos; k++) { const p = a.pos[k];
+    const row = el("div", "req", `<span>Posição ${k + 1}${p.sec ? ` (${nomeSetor(p.sec)})` : ""}: chão ${p.fardos} fardos · alto ${p.alto} de ${p.niveis} palete(s)${p.isolada ? " · <b>isolada agora</b>" : ""}</span>`);
+    if (p.niveis < AT_CFG.niveisMax) { const b = el("button", "plain mini", `<span>+ nível (M ${fmt(AT_CFG.nivelCusto)})</span>`); b.setAttribute("aria-label", `Instalar nível no alto na posição ${k + 1} por M ${fmt(AT_CFG.nivelCusto)}`); b.onclick = () => instalarNivel(k); row.appendChild(b); }
+    vc.appendChild(row); }
+  const dd = a.dias[0]; if (dd && (dd.descidas || dd.subidas)) vc.appendChild(el("p", "note", `Ontem: ${dd.descidas} descida(s) do alto (${dd.urgentes || 0} no pico), ${dd.subidas} subida(s), trechos isolados por ${dd.isoladoS || 0} s.`));
+  body.appendChild(vc);
   // compra de paletes
   body.appendChild(el("div", "sec-title", "Comprar paletes"));
   const cc = el("div", "card");
@@ -4051,9 +4120,13 @@ const SH_CFG = {
   seguranca: { contratar: 260, salario: 26, cap: 14, max: 10 },
   manutencao: [{ nome: "Mínima", custo: 60, pane: 1 / 70 }, { nome: "Preventiva", custo: 160, pane: 1 / 160 }, { nome: "Completa", custo: 320, pane: 1 / 420 }],
   conserto: 180, condominio: 300, semanaInicial: 15,
+  maxGrande: 16,                                                           // 1.4: o Grande comporta equipes maiores
+  equip: { limpeza: { nome: "Lavadora de piso", custo: 2500, mult: 1.3, ic: "🧽" }, seguranca: { nome: "Central de câmeras", custo: 3000, mult: 1.3, ic: "📹" } },
   satMin: 0.7, recusaMax: 0.1,
 };
 const SH_ATIVO = NA_CARREIRA && (FASE === "brisa" || FASE === "grande");
+// 1.4: pontos de extensão usados pela reunião da semana (06j); sem a reunião, tudo fica neutro
+const SH_MOD = { cap: () => 1, extraLimpeza: () => 0, extraSeg: () => 0, sat: () => 0, sujeira: () => 1, paneMult: () => 1, escolherPane: null, deixarEntrar: () => false, tick: () => {}, fechar: () => {}, fimSemana: () => {}, desenhar: () => {} };
 // layout do shopping a partir do tamanho do prédio. spec: quantas unidades de cada tipo.
 function layoutShopping(spec) {
   const u = [], cx = W / 2, an = 124, top = 56, corY = 200, corH = 58, baseY = corY + corH + 8, bot = H - 70;
@@ -4120,16 +4193,20 @@ const campanhaAtiva = () => { const c = campanhaDa(semana()); return c && sh().c
 const eventoAtivo = () => { const id = sh().eventos[S.day]; return id ? EVENTOS.find(e => e.id === id) : null; };
 
 // ---------- capacidade e satisfação ----------
-const capLimpeza = () => sh().limpeza * SH_CFG.limpeza.cap;
-const capSeguranca = () => sh().seguranca * SH_CFG.seguranca.cap;
-const capacidade = () => Math.max(4, Math.round(Math.min(capLimpeza(), capSeguranca()) * (sh().panes.some(p => p.id === "ar") ? 0.8 : 1)));
+const maxEquipeSh = papel => FASE === "grande" ? SH_CFG.maxGrande : SH_CFG[papel].max;
+const multEquip = papel => sh().equip && sh().equip[papel] ? SH_CFG.equip[papel].mult : 1;
+const capLimpeza = () => Math.round((sh().limpeza + SH_MOD.extraLimpeza()) * SH_CFG.limpeza.cap * multEquip("limpeza"));
+const capSeguranca = () => Math.round((sh().seguranca + SH_MOD.extraSeg()) * SH_CFG.seguranca.cap * multEquip("seguranca"));
+const capacidade = () => Math.max(4, Math.round(Math.min(capLimpeza(), capSeguranca()) * (sh().panes.some(p => p.id === "ar") ? 0.8 : 1) * SH_MOD.cap()));
+const dicaLotacao = () => { const p = gargalo() === "limpeza" ? "limpeza" : "seguranca", s = sh();
+  return s[p] < maxEquipeSh(p) ? "Contrate mais equipe em Operação." : !(s.equip && s.equip[p]) ? `Equipe no máximo: compre ${SH_CFG.equip[p].nome.toLowerCase()} em Operação.` : "Em semana de evento, use o reforço temporário na reunião da semana."; };
 const gargalo = () => capLimpeza() <= capSeguranca() ? "limpeza" : "segurança";
 const dentro = () => visitantes.filter(v => v.estado !== "fora").length;
 function satisfacaoAgora() {
   const s = sh(), L = lojasSh(), cats = categoriasAtivas(L).filter(c => c !== "ancora").length;
   const lot = dentro() / Math.max(1, capacidade()), suj = Math.min(1, s.sujeira / 60), ev = eventoAtivo();
   let v = 0.5 + Math.min(0.16, cats * 0.03) + (1 - suj) * 0.16 - Math.max(0, lot - 0.85) * 0.8 - s.panes.length * 0.07 - (1 - taxaOcupacao(L)) * 0.12
-    + (campanhaAtiva() ? 0.04 : 0) + (ev ? (s.seguranca >= ev.seguranca ? 0.04 : -0.1) : 0) + (ocupadas(L).some(u => u.tam === "ancora") ? 0.05 : 0);
+    + (campanhaAtiva() ? 0.04 : 0) + (ev ? (s.seguranca >= ev.seguranca ? 0.04 : -0.1) : 0) + (ocupadas(L).some(u => u.tam === "ancora") ? 0.05 : 0) + SH_MOD.sat();
   return Math.max(0, Math.min(1, v));
 }
 // ---------- visitantes ----------
@@ -4137,7 +4214,7 @@ const visitantes = []; let tPe = 0, tEv = 0;
 function novoVisitante(car, idx, evento) {
   const L = lojasSh(), abertas = ocupadas(L); if (!abertas.length) { if (car) car.back++; return; }
   const s = sh(), Y = lay(), ev = eventoAtivo();
-  if (dentro() >= capacidade()) { s.hoje.recusados++; if (evento) s.hoje.evRecusados++; S.today.lost++; changeRep(-0.01); if (car) car.back++; if (!s.avisoLotado) { s.avisoLotado = true; toastOnce("lotadoSh", `Shopping lotado: a ${gargalo()} limita a capacidade a ${capacidade()} pessoas. Contrate mais equipe.`); } return; }
+  if (dentro() >= capacidade() && !SH_MOD.deixarEntrar(evento)) { s.hoje.recusados++; if (evento) s.hoje.evRecusados++; S.today.lost++; changeRep(-0.01); if (car) car.back++; if (!s.avisoLotado) { s.avisoLotado = true; toastOnce("lotadoSh", `Shopping lotado: a ${gargalo()} limita a capacidade a ${capacidade()} pessoas. ${dicaLotacao()}`); } return; }
   // roteiro: 1 a 3 lojas, puxado pelo movimento que cada ramo traz
   const n = 1 + (Math.random() < 0.5 ? 1 : 0) + (Math.random() < 0.25 ? 1 : 0), roteiro = [];
   for (let k = 0; k < n; k++) { const tot = abertas.reduce((a, u) => a + RAMOS[u.ocup.ramo].fluxo, 0); let r = Math.random() * tot; const u = abertas.find(x => (r -= RAMOS[x.ocup.ramo].fluxo) <= 0) || abertas[0]; if (!roteiro.includes(u.id)) roteiro.push(u.id); }
@@ -4168,7 +4245,7 @@ function tickVisitantes(dt) {
   if (ev) { tEv += dt * ev.publico / DAY_LEN * (isRush() ? 1.3 : 0.92); while (tEv >= 1) { tEv -= 1; novoVisitante(null, 0, true); } }   // público do evento: chega a pé e de ônibus
   for (let i = visitantes.length - 1; i >= 0; i--) {
     const v = visitantes[i], chegou = follow(v, 58, dt);
-    s.sujeira += dt * 0.012 * (ev ? ev.sujeira : 1);
+    s.sujeira += dt * 0.012 * (ev ? ev.sujeira : 1) * SH_MOD.sujeira();
     if (v.estado === "chegando" && chegou) rumo(v);
     else if (v.estado === "indo" && chegou) { v.estado = "dentro"; v.t = 4 + Math.random() * 5; }
     else if (v.estado === "dentro") { v.t -= dt; if (v.t <= 0) {
@@ -4205,7 +4282,7 @@ function tickEquipeSh(dt) {
 // ---------- manutenção: panes ----------
 function tickManutencao(dt) {
   const s = sh(), Y = lay(), M = SH_CFG.manutencao[s.manut];
-  if (Math.random() < M.pane * dt) { const livres = Y.equip.filter(q => !s.panes.some(p => p.id === q.id)); if (livres.length) { const q = sorteio(livres); s.panes.push({ id: q.id, t: 0 }); banner(`⚠️ ${q.nome} com defeito`, "#b7773b"); anunciar(`${q.nome} com defeito. Mande consertar no painel de operação.`); lastSig = ""; } }
+  if (Math.random() < M.pane * dt * SH_MOD.paneMult()) { const livres = Y.equip.filter(q => !s.panes.some(p => p.id === q.id)); if (livres.length) { const q = SH_MOD.escolherPane ? SH_MOD.escolherPane(livres) : sorteio(livres); s.panes.push({ id: q.id, t: 0 }); banner(`⚠️ ${q.nome} com defeito`, "#b7773b"); anunciar(`${q.nome} com defeito. Mande consertar no painel de operação.`); lastSig = ""; } }
   s.panes.forEach(p => p.t += dt);
   if (s.manut === 2) s.panes = s.panes.filter(p => p.t < 12);                  // contrato completo conserta sozinho
 }
@@ -4218,7 +4295,7 @@ function consertar(id) {
 function tickShopping(dt) {
   const s = sh();
   tickVisitantes(dt); tickEquipeSh(dt); tickManutencao(dt);
-  tickLocacao(lojasSh(), SH_LOC(), dt);
+  tickLocacao(lojasSh(), SH_LOC(), dt); SH_MOD.tick(dt);
   const sat = satisfacaoAgora(); s.hoje.satSoma += sat * dt; s.hoje.satT += dt;
   s.satEMA += (sat - s.satEMA) * Math.min(1, dt / 20);
   S.rep = Math.round((1 + 4 * s.satEMA) * 100) / 100;          // estrelas = satisfação dos visitantes
@@ -4228,7 +4305,7 @@ function fecharSemanaShopping() {         // antes do fechamento: aluguéis, % d
   S.money += d.receita - d.despesas - M.custo; S.today.outras = (S.today.outras || 0) + d.receita; S.today.outrasDesp = (S.today.outrasDesp || 0) + d.despesas + M.custo;
   S.today.sales = (S.today.sales || 0);      // vendas do mercado: não há
   S.today.linhas = (S.today.linhas || []).concat([["Aluguéis e % das vendas", `M ${fmt(d.receita)}`], ["Condomínio de lojas vagas", `-M ${fmt(d.despesas)}`], [`Manutenção (${M.nome.toLowerCase()})`, `-M ${fmt(M.custo)}`]]);
-  s.ultimoLoc = d;
+  s.ultimoLoc = d; SH_MOD.fechar();
 }
 function fimSemanaShopping(L) {
   const s = sh(), h = s.hoje, sat = h.satT ? h.satSoma / h.satT : s.satEMA, ev = eventoAtivo(), camp = campanhaAtiva(), d = s.ultimoLoc || {};
@@ -4243,7 +4320,7 @@ function fimSemanaShopping(L) {
     setTimeout(() => mostrarRelatorioEvento(rel), 3200);
   }
   if (camp) { s.campanhasOk++; s.relatorios.unshift({ tipo: "campanha", id: camp.id, nome: camp.nome, dia: L.day, semana: reg.semana, publico: h.visitas, custos: camp.custo, satisfacao: sat, vendas: reg.vendas }); s.relatorios.length = Math.min(s.relatorios.length, 8); }
-  s.hoje = novoHojeSh(); s.avisoLotado = false;
+  SH_MOD.fimSemana(reg, L); s.hoje = novoHojeSh(); s.avisoLotado = false;
 }
 function mostrarRelatorioEvento(r) {
   if (!document.getElementById("modal").hidden) { filaModal.push(() => mostrarRelatorioEvento(r)); return; }
@@ -4259,9 +4336,16 @@ function mostrarRelatorioEvento(r) {
 // ---------- ações ----------
 function mudarEquipeSh(papel, d) {
   const s = sh(), C = SH_CFG[papel];
-  if (d > 0) { if (s[papel] >= C.max) { toast(`No máximo ${C.max}.`); return; } if (!pagarContratacao(C.contratar, papel === "limpeza" ? "uma pessoa da limpeza" : "um segurança")) return; s[papel]++; taskProgress("upgrades", 1); }
+  if (d > 0) { if (s[papel] >= maxEquipeSh(papel)) { const q = SH_CFG.equip[papel]; toast(`No máximo ${maxEquipeSh(papel)}. ${s.equip && s.equip[papel] ? "Para eventos grandes, use o reforço temporário na reunião da semana." : `Para caber mais gente, compre: ${q.nome.toLowerCase()} em Operação.`}`); return; } if (!pagarContratacao(C.contratar, papel === "limpeza" ? "uma pessoa da limpeza" : "um segurança")) return; s[papel]++; taskProgress("upgrades", 1); }
   else if (s[papel] > (FASE === "grande" && S.obra && S.obra.fase !== "operacao" ? 0 : 1)) s[papel]--;     // antes de abrir o Grande dá para dispensar todos
   anunciar(`Capacidade agora: ${capacidade()} pessoas.`); save(); lastSig = ""; renderSheet();
+}
+function comprarEquipSh(papel) {
+  const s = sh(), q = SH_CFG.equip[papel]; s.equip = s.equip || {};
+  if (s.equip[papel]) return; if (S.money < q.custo) { toast(`Falta dinheiro: ${q.nome.toLowerCase()} custa M ${fmt(q.custo)}.`); return; }
+  if (!pagarContratacao(q.custo, q.nome.toLowerCase())) return;
+  s.equip[papel] = true;
+  banner(`${q.ic} ${q.nome} instalada`, "#2e7a57"); anunciar(`${q.nome}: cada pessoa da ${papel === "limpeza" ? "limpeza" : "segurança"} comporta mais ${Math.round((q.mult - 1) * 100)}%. Capacidade agora: ${capacidade()} pessoas.`); save(); lastSig = ""; renderSheet();
 }
 function mudarManut(d) { const s = sh(); s.manut = Math.max(0, Math.min(2, s.manut + d)); anunciar(`Manutenção ${SH_CFG.manutencao[s.manut].nome.toLowerCase()}: M ${SH_CFG.manutencao[s.manut].custo} por semana.`); save(); lastSig = ""; renderSheet(); }
 function agendarCampanha(dia) {
@@ -4316,6 +4400,7 @@ function desenharShopping() {
   const cap = capacidade(), n = dentro(); rr(Y.x1 - 104, Y.corY - 14, 104, 12, 6, n >= cap ? "#c9513a" : "#0f6e7a"); text(`👥 ${n}/${cap} · ${Math.round(sh().satEMA * 100)}% satisfeitos`, Y.x1 - 52, Y.corY - 5.5, 6.2, "#fff", "center", 800);
   // cidade, carros e estacionamento
   drawCidade(0); drawCars(); drawCidade(1); drawParking();
+  SH_MOD.desenhar();
   // pessoas
   const ents = [...visitantes.filter(v => v.estado !== "dentro"), ...equipeSh].sort((a, b) => a.y - b.y);
   ents.forEach(p => { if (p.papel === "limpeza") { person(p, { body: "#4aa3a3", cap: "#2e7a57", moving: p.path.length > 0 }); rr(p.x + 7, p.y - 2, 3, 14, 1, "#8e7350"); }
@@ -4355,6 +4440,10 @@ function buildOperacao(body) {
   const ec = el("div", "card", `<h3>Equipe</h3><p class="note">Limpeza: M ${SH_CFG.limpeza.salario} por semana cada, comporta ${SH_CFG.limpeza.cap} pessoas. Segurança: M ${SH_CFG.seguranca.salario}, comporta ${SH_CFG.seguranca.cap}. Contratação: M ${SH_CFG.limpeza.contratar} / M ${SH_CFG.seguranca.contratar}.</p>`);
   ec.appendChild(passo("Limpeza", () => `${sh().limpeza} (cabem ${capLimpeza()})`, () => mudarEquipeSh("limpeza", -1), () => mudarEquipeSh("limpeza", 1), "equipe de limpeza"));
   ec.appendChild(passo("Segurança", () => `${sh().seguranca} (cabem ${capSeguranca()})`, () => mudarEquipeSh("seguranca", -1), () => mudarEquipeSh("seguranca", 1), "seguranças"));
+  ec.appendChild(el("p", "note", `Equipe máxima: ${maxEquipeSh("limpeza")} de cada.`));
+  ["limpeza", "seguranca"].forEach(papel => { const q = SH_CFG.equip[papel];
+    if (s.equip && s.equip[papel]) ec.appendChild(el("p", "note", `<span class="tag bom">${q.ic} ${q.nome}</span> cada pessoa comporta +${Math.round((q.mult - 1) * 100)}%.`));
+    else { const b = el("button", "btn", `${q.ic} ${q.nome}: +${Math.round((q.mult - 1) * 100)}% por pessoa (M ${fmt(q.custo)})`); b.onclick = () => comprarEquipSh(papel); ec.appendChild(b); } });
   body.appendChild(ec);
   const mc = el("div", "card", `<h3>Manutenção</h3><p class="note">Contrato de manutenção por semana. Quanto melhor, menos panes; o completo conserta sozinho em poucos segundos. Pane parada derruba a satisfação (ar-condicionado parado também reduz a capacidade).</p>`);
   mc.appendChild(passo("Contrato", () => `${SH_CFG.manutencao[sh().manut].nome} · M ${SH_CFG.manutencao[sh().manut].custo}`, () => mudarManut(-1), () => mudarManut(1), "contrato de manutenção"));
@@ -4423,7 +4512,8 @@ function extrasShopping() {
     { id: "mix", label: `${SH_META.cats} categorias de lojas abertas`, tipo: "gestao", have: categoriasAtivas(L).filter(c => c !== "ancora").length, need: SH_META.cats, como: "Serviços, alimentação, eletrônicos, moda, lazer e quiosques contam (âncora não conta)." },
     { id: "evento", label: "Um evento com resultado positivo", tipo: "gestao", have: Math.min(1, s.eventosOk), need: 1, como: "Aba Carreira > Calendário e eventos. Veja o relatório no fim da semana." },
     { id: "campanha", label: "Uma campanha sazonal", tipo: "gestao", have: Math.min(1, s.campanhasOk), need: 1, como: "As datas aparecem no calendário; só valem nas semanas delas." },
-  ];
+  ].concat(typeof R14_META === "number" ? [{ id: "reunioes", label: `${R14_META} reuniões da semana decididas por você`, tipo: "gestao", have: Math.min(R14_META, decididas()), need: R14_META,
+    como: "Abra a reunião da semana e escolha cada decisão (pode ser a opção padrão). Semana sem a sua escolha, ou entregue a uma política, não conta." }] : []);
 }
 function cfgShopping(base) {
   return Object.assign({
@@ -5062,6 +5152,267 @@ if (OB_ATIVO) {
   const a0 = GANCHOS.assinatura;
   GANCHOS.assinatura = () => { const o = ob(); return (a0 ? a0() : "") + `|ob${o.fase}${JSON.stringify(o.lic).replace(/"t":[\d.]+/g, "")}${Object.keys(o.compromissos).join()}${o.turmas}${o.guindaste}${o.lona}${o.embargo}${o.divulgacao}${JSON.stringify(o.convidados)}${Math.floor(o.pct / 5)}${o.chuva > 0}${o.pausada}${o.usarReserva}${motivoParada()}`; };
   PAINEIS.obra = buildObra;
+}
+</script>
+<script>
+"use strict";
+// =====================================================================
+// 1.4: reunião da semana no shopping (capítulo 7 e capítulo 8 depois da inauguração).
+// No início de cada semana, até três decisões (contratos, operação e calendário), cada uma com uma resposta
+// padrão já marcada e gratuita. Quem não quiser decidir não faz nada: o padrão vale. No fim da semana, o
+// relatório mostra o efeito de cada escolha. Catálogo: negociar contrato (pedir mais ou dar carência a uma
+// âncora), composição por pesquisa (anunciar vaga para um ramo), ponto crítico de lotação (entrada auxiliar
+// ou seguranças na entrada), limpeza (mutirão ou horário antes do pico), segurança (ronda reforçada e
+// ocorrências leves), manutenção programada por desgaste, preparação de evento (reforço ou fila organizada),
+// campanha e agenda de eventos. Depois de decidir 3 vezes numa área, dá para entregar a área a uma política.
+// Opção paga é cobrada na hora da escolha (entra no resultado da semana) e trava a decisão.
+// Nenhuma janela obrigatória: a reunião aparece no cartão do shopping, na missão e na lista acessível.
+// =====================================================================
+const R14 = { anuncio: 150, entrada: 120, entradaCap: 0.15, segEntradaCap: 0.08, segEntradaSat: -0.02, mutirao: 100, programada: 90, reforcoPessoa: 80, reforcoN: 2, fila: 150, ronda: 60,
+  desgaste: [1 / 300, 1 / 700, 1 / 1500], ocorrChance: 0.4, ocorrEspera: 20, ocorrSat: -0.05, ocorrDur: 25, negociarMais: 0.1, carencia: 2, deleg: 3 };
+const r14Ativo = () => SH_ATIVO && (FASE === "brisa" || (typeof operando === "function" && operando()));
+const reforcoN = () => FASE === "grande" ? 4 : R14.reforcoN;
+const R14_META = 4;                                                      // reuniões decididas pelo jogador para a meta do capítulo
+const decididas = () => (S.shop && S.shop.r14 && S.shop.r14.decididas) || 0;
+const AREA_NOME = { contratos: "Contratos", operacao: "Operação", calendario: "Calendário" };
+const POL_NOME = { contratos: "Política de locação: aceitar sozinho bons pagadores de ramos em falta", operacao: "Supervisor de operação: resolve lotação, limpeza, ocorrências e manutenção", calendario: "Produtor de eventos: aplica o reforço quando o público previsto passa da capacidade" };
+const CAT_PROCURA = ["alimentacao", "moda", "lazer", "servicos", "eletronicos", "quiosque"];
+const CAT_IC = { servicos: "💊", alimentacao: "🍽️", eletronicos: "🎧", moda: "👗", lazer: "🎬", quiosque: "🛍️" };
+function r14() {
+  const s = sh(); if (!s.r14) s.r14 = { sem: null, dec: [], manual: { contratos: 0, operacao: 0, calendario: 0 }, pol: { contratos: false, operacao: false, calendario: false }, desg: {}, anuncio: null, ocorr: null, ocorrSem: null, hist: [], sujSoma: 0, sujT: 0, recAnt: null, sujAnt: null };
+  const r = s.r14; lay().equip.forEach(q => { if (r.desg[q.id] == null) r.desg[q.id] = 0.15 + 0.1 * lay().equip.indexOf(q); }); return r;
+}
+const decisao = tipo => r14().dec.find(d => d.tipo === tipo);
+const escolha = tipo => { const d = decisao(tipo); return d && r14Ativo() ? d.opcoes[d.esc].id : null; };
+const maxDesg = () => { const r = r14(); return Math.max(0, ...Object.values(r.desg)); };
+// ---------- geração da reunião ----------
+function catsFaltando() { const L = lojasSh(), tem = categoriasAtivas(L); return CAT_PROCURA.filter(c => !tem.includes(c) && L.unidades.some(u => !u.ocup && TAMANHOS[u.tam].ramos.some(r => RAMOS[r].cat === c))); }
+function decContratos() {
+  const L = lojasSh(), props = L.propostas.filter(p => !p.renovacao).sort((a, b) => b.aluguel - a.aluguel);
+  if (props.length) { const p = props[0], u = L.unidades.find(x => x.id === p.unidade), anc = u && u.tam === "ancora";
+    return { tipo: "negociar", area: "contratos", titulo: `Negociar com ${p.nome}`, txt: `${RAMOS[p.ramo].nome} oferece M ${fmt(p.aluguel)} por semana${p.pct ? ` + ${Math.round(p.pct * 100)}% das vendas` : ""}. Ocupação agora ${pctTxt(taxaOcupacao(L))}: quanto mais cheio o shopping, mais o lojista resiste a pagar mais.`, dados: { prop: p.id },
+      opcoes: [{ id: "normal", rot: "Seguir com Aceitar ou Recusar", desc: "A proposta continua na lista, como sempre." },
+        { id: "mais", rot: `Pedir ${Math.round(R14.negociarMais * 100)}% a mais`, desc: `Se topar, assina já com M ${fmt(Math.round(p.aluguel * (1 + R14.negociarMais)))}. Chance de desistir: cerca de ${Math.round(chanceDesistir() * 100)}%.`, agora: true },
+        ...(anc ? [{ id: "carencia", rot: `Oferecer carência de ${R14.carencia} semanas`, desc: "A âncora assina já e paga só a % das vendas nas primeiras semanas; âncora aberta traz muito público.", agora: true }] : [])] }; }
+  const falta = catsFaltando();
+  if (falta.length) { const c = falta[0];
+    return { tipo: "composicao", area: "contratos", titulo: "Pesquisa com os visitantes", txt: `Os visitantes mais procuram: ${falta.slice(0, 3).map(x => CAT_IC[x] + " " + CAT_NOME[x].toLowerCase()).join(", ")}. Os balões no cenário mostram o que falta.`, dados: { cat: c },
+      opcoes: [{ id: "acaso", rot: "Deixar as propostas virem ao acaso", desc: "Nenhum custo." }, { id: "anunciar", rot: `Anunciar vaga para ${CAT_NOME[c].toLowerCase()} (M ${R14.anuncio})`, desc: "As próximas 2 propostas para lojas vagas vêm desse ramo, quando couber.", custo: R14.anuncio }] }; }
+  return null;
+}
+const chanceDesistir = () => Math.min(0.7, 0.15 + 0.5 * taxaOcupacao(lojasSh()));
+function decOperacao() {
+  const s = sh(), r = r14(), ult = s.dias[0], Y = lay();
+  const eqPior = Object.keys(r.desg).sort((a, b) => r.desg[b] - r.desg[a])[0], q = Y.equip.find(x => x.id === eqPior);
+  const cand = [];
+  if (r.desg[eqPior] >= 0.6 && s.manut < 2 && !s.panes.some(p => p.id === eqPior))
+    cand.push({ tipo: "manutencao", area: "operacao", titulo: `${q.nome}: sinal de desgaste`, txt: `Desgaste ${Math.round(r.desg[eqPior] * 100)}%. Equipamento gasto quebra mais (conserto avulso M ${SH_CFG.conserto} e satisfação em queda).`, dados: { eq: eqPior },
+      opcoes: [{ id: "esperar", rot: "Esperar", desc: "Sem custo agora; o risco de pane continua subindo." }, { id: "programada", rot: `Manutenção programada fora do horário (M ${R14.programada})`, desc: "Feita à noite, no fechamento desta semana: o desgaste volta a zero.", custo: R14.programada }] });
+  if (ult && (ult.recusa > 0.03 || ult.picoDentro >= ult.cap * 0.9))
+    cand.push({ tipo: "lotacao", area: "operacao", titulo: "Ponto crítico: entrada lotada", txt: `Semana passada: pico de ${ult.picoDentro} pessoas para ${ult.cap} lugares e ${ult.recusados} recusados.`, dados: {},
+      opcoes: [{ id: "nada", rot: "Deixar como está", desc: "Sem custo." }, { id: "entrada", rot: `Abrir a entrada auxiliar (M ${R14.entrada})`, desc: `+${Math.round(R14.entradaCap * 100)}% de capacidade nesta semana.`, custo: R14.entrada },
+        { id: "seguranca", rot: "Deslocar seguranças para a entrada", desc: `Grátis: +${Math.round(R14.segEntradaCap * 100)}% de capacidade, mas menos ronda (satisfação ${Math.round(R14.segEntradaSat * 100)} pontos).` }] });
+  if (r.sujAnt != null && r.sujAnt >= 0.3)
+    cand.push({ tipo: "limpeza", area: "operacao", titulo: "Limpeza da praça", txt: `Sujeira média da semana passada: ${Math.round(r.sujAnt * 100)}%. As manchas no chão aparecem no cenário.`, dados: {},
+      opcoes: [{ id: "manter", rot: "Manter a escala", desc: "Sem custo." }, { id: "mutirao", rot: `Mutirão no horário de pico (M ${R14.mutirao})`, desc: "Limpa tudo quando o pico começa e segura a sujeira durante ele.", custo: R14.mutirao },
+        { id: "antes", rot: "Limpeza antes do pico", desc: "Grátis: menos sujeira no pico, um pouco mais fora dele." }] });
+  cand.push({ tipo: "seguranca", area: "operacao", titulo: "Escala da segurança", txt: "Ocorrências leves (criança perdida, discussão na fila) acontecem de vez em quando. Com ronda reforçada, são resolvidas na hora.", dados: {},
+    opcoes: [{ id: "normal", rot: "Ronda normal", desc: "Sem custo. Se houver ocorrência, você escolhe na hora (ou a ronda resolve devagar)." }, { id: "reforcada", rot: `Ronda reforçada (M ${R14.ronda})`, desc: "Ocorrências desta semana resolvidas na hora, sem queda de satisfação.", custo: R14.ronda }] });
+  // um assunto de operação por semana, sem repetir o da semana anterior quando houver outro
+  const d = cand.find(c => c.tipo !== r.ultOp) || cand[0]; r.ultOp = d.tipo; return d;
+}
+function decCalendario() {
+  const s = sh(), ev = s.eventos[S.day] && EVENTOS.find(e => e.id === s.eventos[S.day]);
+  if (ev) { const prev = ev.publico + Math.round(capacidade() * 0.6);
+    return { tipo: "evento", area: "calendario", titulo: `Preparar: ${ev.nome}`, txt: `Previsão: cerca de ${prev} pessoas ao longo da semana no shopping, ${ev.publico} só do evento, para ${capacidade()} lugares ao mesmo tempo. O evento pede ${ev.seguranca} seguranças (você tem ${s.seguranca}).`, dados: { ev: ev.id },
+      opcoes: [{ id: "nada", rot: "Sem preparação extra", desc: "Sem custo." }, { id: "reforco", rot: `Reforço temporário (M ${R14.reforcoPessoa * reforcoN() * 2})`, desc: `+${reforcoN()} na limpeza e +${reforcoN()} na segurança só nesta semana.`, custo: R14.reforcoPessoa * reforcoN() * 2 },
+        { id: "fila", rot: `Fila organizada no átrio (M ${R14.fila})`, desc: "Metade do público do evento que seria recusado espera na fila e entra.", custo: R14.fila }] }; }
+  for (const k of [0, 1]) { const dia = S.day + k, c = campanhaDa(semana(dia));
+    if (c && !s.campanhas[dia] && (k > 0 || S.dayT < DAY_LEN * 0.5)) return { tipo: "campanha", area: "calendario", titulo: `Campanha: ${c.nome}`, txt: `Semana ${semana(dia)}: +${Math.round(c.fluxo * 100)}% de movimento e +${Math.round(c.gasto * 100)}% de gasto em ${c.cats.map(x => CAT_NOME[x].toLowerCase()).join(", ")}.`, dados: { dia },
+      opcoes: [{ id: "nao", rot: "Não fazer", desc: "Sem custo." }, { id: "fazer", rot: `Fazer a campanha (M ${fmt(c.custo)})`, desc: "Agenda agora; vale na semana da data.", agora: true }] }; }
+  if (!Object.keys(s.eventos).some(d => +d > S.day && +d <= S.day + 3))
+    return { tipo: "agenda", area: "calendario", titulo: "Agenda da praça de eventos", txt: "Nenhum evento nas próximas 3 semanas. Eventos trazem público e receita de ingressos.", dados: { dia: S.day + 1 },
+      opcoes: [{ id: "nao", rot: "Agora não", desc: "Sem custo." }, { id: "feira", rot: `Feira de artesanato na próxima semana (M ${fmt(EVENTOS[0].custo)})`, desc: "Público fiel, baixo custo.", agora: true }, { id: "parque", rot: `Parque infantil na próxima semana (M ${fmt(EVENTOS[1].custo)})`, desc: "Atrai famílias; pede 3 seguranças.", agora: true }] };
+  return null;
+}
+function novaReuniao() {
+  const r = r14(); r.sem = S.day; r.dec = [decContratos(), decOperacao(), decCalendario()].filter(Boolean).map(d => Object.assign(d, { esc: 0, conf: false, feito: null, efeito: "" }));
+  r.ocorrSem = Math.random() < R14.ocorrChance ? (0.2 + Math.random() * 0.5) * DAY_LEN : null; r.ocorr = null; r.ocorrRes = null;
+  r.dec.forEach(d => { if (r.pol[d.area]) aplicarPolitica(d); });
+  const pend = r.dec.filter(d => !d.conf).length;
+  if (pend) { banner(`🗂️ Reunião da semana: ${pend} decisão(ões)`, "#0f6e7a"); anunciar(`Reunião da semana ${semana()}: ${pend} decisão(ões). Abra a reunião no cartão do shopping ou siga o padrão.`); }
+  lastSig = "";
+}
+// ---------- escolhas ----------
+function escolher(tipo, idx, porPolitica) {
+  const r = r14(), d = decisao(tipo); if (!d || d.conf || !d.opcoes[idx]) return false;
+  const o = d.opcoes[idx];
+  if (o.custo && !pagarContratacao(o.custo, o.rot.toLowerCase())) return false;
+  d.esc = idx; d.conf = true; d.porPolitica = !!porPolitica;
+  if (o.agora) executarAgora(d, o);
+  if (o.id === "anunciar") r.anuncio = { cat: d.dados.cat, restam: 2, recebidas: 0 };
+  if (idx !== 0 && !porPolitica) { r.manual[d.area]++; if (r.manual[d.area] === R14.deleg && decididas() >= R14_META) toast(`${AREA_NOME[d.area]}: agora dá para entregar esta área a uma política na reunião.`); }
+  if (!porPolitica) anunciar(`${d.titulo}: ${o.rot}.`);
+  save(); lastSig = ""; renderSheet(); return true;
+}
+function executarAgora(d, o) {
+  const L = lojasSh();
+  if (d.tipo === "negociar") { const p = L.propostas.find(x => x.id === d.dados.prop);
+    if (!p) { d.feito = "A proposta já tinha expirado."; return; }
+    if (o.id === "mais") { if (Math.random() < chanceDesistir()) { recusarProposta(L, p.id); d.feito = `${p.nome} não aceitou pagar mais e desistiu.`; banner(`🤝 ${p.nome} desistiu`, "#b7773b"); }
+      else { p.aluguel = Math.round(p.aluguel * (1 + R14.negociarMais)); const ok = aceitarProposta(L, p.id); d.feito = ok ? `${p.nome} topou: M ${fmt(p.aluguel)} por semana.` : "A unidade já tinha sido ocupada."; if (ok) banner(`🤝 ${p.nome} assinou por M ${fmt(p.aluguel)}`, "#2e7a57"); } }
+    else if (o.id === "carencia") { const ok = aceitarProposta(L, p.id), u = ok && L.unidades.find(x => x.id === p.unidade);
+      if (u && u.ocup) { u.ocup.carencia = R14.carencia; d.feito = `${p.nome} assinou com ${R14.carencia} semanas de carência.`; banner(`🤝 ${p.nome} assinou com carência`, "#2e7a57"); } else d.feito = "A unidade já tinha sido ocupada."; }
+  } else if (d.tipo === "campanha") d.feito = agendarCampanha(d.dados.dia) ? "Campanha agendada." : "Não deu para agendar (falta dinheiro ou já passou).";
+  else if (d.tipo === "agenda") d.feito = agendarEvento(d.dados.dia, o.id) ? `${EVENTOS.find(e => e.id === o.id).nome} agendado.` : "Não deu para agendar (falta dinheiro).";
+}
+function seguirPadrao() { r14().dec.forEach(d => { if (!d.conf) { d.conf = true; d.esc = 0; } }); anunciar("Reunião: todas as decisões seguem o padrão."); save(); lastSig = ""; renderSheet(); }
+function aplicarPolitica(d) {
+  const ix = id => Math.max(0, d.opcoes.findIndex(o => o.id === id)), s = sh();
+  let k = 0;
+  if (d.tipo === "manutencao") k = ix("programada");
+  else if (d.tipo === "lotacao") k = S.money > 2000 ? ix("entrada") : ix("seguranca");
+  else if (d.tipo === "limpeza") k = ix("antes");
+  else if (d.tipo === "evento") { const ev = EVENTOS.find(e => e.id === d.dados.ev); k = s.seguranca < ev.seguranca || ev.publico > capacidade() ? ix("reforco") : 0; }
+  if (k && !escolher(d.tipo, k, true)) k = 0;
+  if (!k) { d.conf = true; d.esc = 0; d.porPolitica = true; }
+}
+function alternarPolitica(area) { const r = r14(); if (r.manual[area] < R14.deleg || (r.decididas || 0) < R14_META) return; r.pol[area] = !r.pol[area]; toast(r.pol[area] ? POL_NOME[area] + "." : `${AREA_NOME[area]}: você volta a decidir.`); save(); lastSig = ""; renderSheet(); }
+// ---------- ocorrência leve de segurança ----------
+function resolverOcorrencia(atender) {
+  const r = r14(), o = r.ocorr; if (!o || o.res) return;
+  o.res = atender ? "atendida" : "ronda"; o.t = 0;
+  if (atender) { toast(`${o.nome}: um segurança resolveu na hora.`); r.ocorrRes = "atendida na hora"; } else { r.ocorrRes = "a ronda resolveu devagar (satisfação caiu um pouco)"; }
+  lastSig = ""; renderSheet();
+}
+const OCORR = [{ nome: "Criança perdida no corredor", ic: "🧒" }, { nome: "Discussão na fila da praça de alimentação", ic: "🗣️" }, { nome: "Carrinho de bebê preso na porta", ic: "🚼" }];
+// ---------- efeitos ligados ao SH_MOD ----------
+Object.assign(SH_MOD, {
+  cap: () => escolha("lotacao") === "entrada" ? 1 + R14.entradaCap : escolha("lotacao") === "seguranca" ? 1 + R14.segEntradaCap : 1,
+  extraLimpeza: () => escolha("evento") === "reforco" ? reforcoN() : 0,
+  extraSeg: () => escolha("evento") === "reforco" ? reforcoN() : 0,
+  sat: () => { if (!r14Ativo()) return 0; const r = r14(); let v = escolha("lotacao") === "seguranca" ? R14.segEntradaSat : 0; if (r.ocorr && r.ocorr.res !== "atendida" && (!r.ocorr.res || r.ocorr.t < R14.ocorrDur)) v += r.ocorr.res === "ronda" ? R14.ocorrSat : 0; return v; },
+  sujeira: () => { if (!r14Ativo()) return 1; const e = escolha("limpeza"), pico = isRush(); return e === "mutirao" && pico ? 0.6 : e === "antes" ? (pico ? 0.7 : 1.25) : 1; },
+  paneMult: () => r14Ativo() ? 0.4 + 1.2 * maxDesg() : 1,
+  escolherPane: livres => { if (!r14Ativo()) return sorteio(livres); const r = r14(), tot = livres.reduce((a, q) => a + 0.1 + r.desg[q.id], 0); let x = Math.random() * tot; return livres.find(q => (x -= 0.1 + r.desg[q.id]) <= 0) || livres[0]; },
+  deixarEntrar: evento => { if (!evento || escolha("evento") !== "fila") return false; const r = r14(); r.filaN = (r.filaN || 0) + 1; return r.filaN % 2 === 0; },
+  tick(dt) {
+    if (!r14Ativo()) return;
+    const r = r14(), s = sh();
+    if (r.sem !== S.day) novaReuniao();
+    // desgaste dos equipamentos (o contrato completo também revisa à noite)
+    const taxa = R14.desgaste[s.manut]; Object.keys(r.desg).forEach(k => { if (!s.panes.some(p => p.id === k)) r.desg[k] = Math.min(1, r.desg[k] + taxa * dt); });
+    // mutirão: zera a sujeira quando o pico começa
+    if (escolha("limpeza") === "mutirao" && isRush() && !r.mutiraoFeito) { r.mutiraoFeito = true; s.sujeira = 0; banner("🧹 Mutirão de limpeza na praça", "#2e7a57"); }
+    r.sujSoma += Math.min(1, s.sujeira / 60) * dt; r.sujT += dt;
+    // ocorrência leve
+    if (r.ocorrSem != null && !r.ocorr && S.dayT >= r.ocorrSem) { const o = OCORR[Math.floor(Math.random() * OCORR.length)]; r.ocorr = Object.assign({ t: 0, res: null }, o);
+      if (escolha("seguranca") === "reforcada" || r.pol.operacao) resolverOcorrencia(true);
+      else { banner(`${o.ic} ${o.nome}`, "#b7773b"); anunciar(`${o.nome}. Atender agora com um segurança ou deixar a ronda resolver? Veja a reunião da semana.`); lastSig = ""; } }
+    if (r.ocorr) { r.ocorr.t += dt; if (!r.ocorr.res && r.ocorr.t >= R14.ocorrEspera) resolverOcorrencia(false); }
+    // política de locação: aceita sozinha bons pagadores de ramos em falta (a cada 3 s)
+    if (r.pol.contratos) { r.tPol = (r.tPol || 0) + dt; if (r.tPol > 3) { r.tPol = 0; const L = lojasSh(), tem = categoriasAtivas(L);
+      L.propostas.filter(p => !p.renovacao && p.risco < 0.035 && (!tem.includes(RAMOS[p.ramo].cat) || taxaOcupacao(L) < 0.8)).slice(0, 1).forEach(p => { if (aceitarProposta(L, p.id)) banner(`🤝 Política de locação: ${p.nome} assinou`, "#2e7a57"); }); } }
+  },
+  fechar() {
+    if (!r14Ativo()) return;
+    const r = r14(), d = decisao("manutencao");
+    if (d && d.opcoes[d.esc].id === "programada") { r.desg[d.dados.eq] = 0; S.today.linhas = (S.today.linhas || []).concat([[`Manutenção programada: ${lay().equip.find(q => q.id === d.dados.eq).nome.toLowerCase()}`, "feita à noite"]]); }
+    if (sh().manut === 2) Object.keys(r.desg).forEach(k => { if (r.desg[k] >= 0.5) r.desg[k] = 0.1; });
+  },
+  fimSemana(reg) {
+    if (!r14Ativo()) return;
+    const r = r14(), suj = r.sujT ? r.sujSoma / r.sujT : 0, linhas = [];
+    r.dec.forEach(d => { const o = d.opcoes[d.esc]; let ef = d.feito || "";
+      if (d.tipo === "lotacao") ef = `${reg.recusados} recusados (semana anterior: ${r.recAnt != null ? r.recAnt : "?"}); capacidade ${reg.cap}.`;
+      else if (d.tipo === "limpeza") ef = `Sujeira média ${Math.round(suj * 100)}% (antes ${Math.round((r.sujAnt || 0) * 100)}%).`;
+      else if (d.tipo === "manutencao") ef = o.id === "programada" ? "Desgaste zerado; risco de pane menor." : `Desgaste em ${Math.round((r.desg[d.dados.eq] || 0) * 100)}%.`;
+      else if (d.tipo === "evento") ef = `Público do evento ${sh().hoje.evPublico}, recusados ${sh().hoje.evRecusados}, satisfação ${pctTxt(reg.sat)}.`;
+      else if (d.tipo === "composicao") ef = o.id === "anunciar" ? `${r.anuncio ? r.anuncio.recebidas : 0} proposta(s) de ${CAT_NOME[d.dados.cat].toLowerCase()} recebida(s).` : "Propostas ao acaso.";
+      else if (d.tipo === "seguranca") ef = r.ocorrRes ? `Ocorrência: ${r.ocorrRes}.` : "Nenhuma ocorrência.";
+      linhas.push(`${d.titulo}: ${o.rot.toLowerCase()}${d.porPolitica ? " (política)" : d.conf ? "" : " (padrão)"}. ${ef}`.trim()); });
+    if (!r.dec.some(d => d.tipo === "seguranca") && r.ocorrRes) linhas.push(`Ocorrência: ${r.ocorrRes}.`);
+    const voce = r.dec.length && r.dec.every(d => d.conf && !d.porPolitica);
+    if (voce) r.decididas = (r.decididas || 0) + 1;
+    else linhas.push(r.dec.some(d => d.porPolitica) ? "Reunião com política: não conta para a meta de reuniões decididas por você." : "Reunião sem a sua decisão: valeu o padrão e a semana não contou para a meta.");
+    r.hist.unshift({ semana: reg.semana, linhas }); r.hist.length = Math.min(r.hist.length, 4);
+    r.recAnt = reg.recusados; r.sujAnt = suj; r.sujSoma = 0; r.sujT = 0; r.mutiraoFeito = false; r.filaN = 0;
+    if (r.anuncio && r.anuncio.restam <= 0) r.anuncio = null;
+    reg.reuniao = linhas;
+  },
+  desenhar() {
+    if (!r14Ativo()) return;
+    const r = r14(), Y = lay();
+    Y.equip.forEach(q => { if (r.desg[q.id] >= 0.6 && !sh().panes.some(p => p.id === q.id)) { ctx.strokeStyle = "#e0a100"; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(q.x, q.y, 10, 0, 7); ctx.stroke(); } });
+    const lo = escolha("lotacao"), fila = escolha("evento") === "fila";
+    if (lo === "entrada") { rr(Y.entrada.x + 46, H - 8, 34, 8, 2, "#9ad0ec"); text("AUXILIAR", Y.entrada.x + 63, H + 12, 5.6, "#0f6e7a", "center", 800); }
+    if (lo || fila) for (let i = 0; i < 4; i++) { const x = Y.entrada.x - 30 + i * 20, y = H - 16; ctx.fillStyle = "#f57c00"; ctx.beginPath(); ctx.moveTo(x, y - 7); ctx.lineTo(x + 4, y + 2); ctx.lineTo(x - 4, y + 2); ctx.fill(); }
+    if (r.ocorr && !r.ocorr.res) emoji(r.ocorr.ic, Y.x0 + (Y.x1 - Y.x0) * 0.6, Y.corY + 12, 12);
+    const comp = decisao("composicao"); if (comp && r14Ativo()) { const ic = CAT_IC[comp.dados.cat]; visitantes.forEach((v, i) => { if (i % 5 === 0 && v.estado !== "dentro") { rr(v.x - 7, v.y - 44, 14, 12, 6, "#fff"); emoji(ic, v.x, v.y - 38, 7); } }); }
+  },
+});
+// anúncio de vaga: as próximas propostas comuns vêm do ramo anunciado, quando houver unidade vaga que caiba
+{ const g0 = gerarProposta;
+  gerarProposta = function (L, cfg, renovar) {
+    const r = SH_ATIVO && S.shop && S.shop.r14;
+    if (!renovar && r && r.anuncio && r.anuncio.restam > 0 && L === S.lojasSh) {
+      const ramos = Object.keys(RAMOS).filter(k => RAMOS[k].cat === r.anuncio.cat);
+      if (L.unidades.some(u => !u.ocup && !L.propostas.some(q => q.unidade === u.id) && TAMANHOS[u.tam].ramos.some(x => ramos.includes(x))))
+        for (let i = 0; i < 12; i++) { const p = g0(L, Object.assign({}, cfg, { ramos }), renovar); if (p) { r.anuncio.restam--; r.anuncio.recebidas++; return p; } }
+    }
+    return g0(L, cfg, renovar);
+  };
+}
+// conserto zera o desgaste daquele equipamento
+{ const c0 = consertar; consertar = function (id) { const antes = sh().panes.length; c0(id); if (sh().panes.length < antes && S.shop.r14) S.shop.r14.desg[id] = 0; }; }
+// ---------- painel da reunião ----------
+function cartaoDecisao(d) {
+  const c = el("div", "card", `<h3>${AREA_NOME[d.area]}: ${d.titulo}</h3><p class="note">${d.txt}</p>`);
+  d.opcoes.forEach((o, i) => {
+    const marcado = d.esc === i, b = el("button", marcado ? "btn mini" : "plain mini", `<span>${marcado ? "✓ " : ""}${o.rot}${i === 0 ? " (padrão)" : ""}</span>`);
+    b.setAttribute("aria-pressed", String(marcado)); b.setAttribute("aria-label", `${o.rot}${i === 0 ? ", resposta padrão" : ""}. ${o.desc}`);
+    if (d.conf) b.disabled = true; else b.onclick = () => escolher(d.tipo, i);
+    c.appendChild(b); c.appendChild(el("p", "note", o.desc));
+  });
+  if (d.conf) c.appendChild(el("p", "note", `<span class="tag bom">${d.porPolitica ? "Decidido pela política" : "Decidido"}</span> ${d.feito || ""}`));
+  return c;
+}
+function buildReuniao(body) {
+  const r = r14();
+  head("🗂️", "#dff0f1", `Reunião da semana ${semana()}`, () => { const n = r.dec.filter(d => !d.conf).length; return n ? `${n} decisão(ões) em aberto · sem a sua escolha vale o padrão e a semana não conta` : "Tudo decidido nesta semana"; });
+  if (!r14Ativo()) { body.appendChild(el("p", "note", "A reunião começa quando o shopping estiver aberto.")); return; }
+  if (r.ocorr && !r.ocorr.res) { const c = el("div", "card", `<h3>${r.ocorr.ic} Agora: ${r.ocorr.nome}</h3><p class="note">Se ninguém atender em ${Math.max(0, Math.ceil(R14.ocorrEspera - r.ocorr.t))} s, a ronda resolve devagar e a satisfação cai um pouco.</p>`);
+    const g = el("div", "linha2"), a = el("button", "btn mini", "Atender agora"), d = el("button", "plain mini", "<span>Deixar a ronda</span>");
+    a.onclick = () => resolverOcorrencia(true); d.onclick = () => resolverOcorrencia(false); g.appendChild(a); g.appendChild(d); c.appendChild(g); body.appendChild(c); }
+  if (!r.dec.length) body.appendChild(el("p", "note", "Nenhuma decisão nesta semana."));
+  r.dec.forEach(d => body.appendChild(cartaoDecisao(d)));
+  body.appendChild(el("div", "sec-title", "Delegar"));
+  Object.keys(AREA_NOME).forEach(a => { const lib = r.manual[a] >= R14.deleg && (r.decididas || 0) >= R14_META;
+    const b = el("button", "plain toggle", `<span>${POL_NOME[a]}: <b>${lib ? (r.pol[a] ? "sim" : "não") : (r.decididas || 0) < R14_META ? `libera depois de ${R14_META} reuniões decididas por você (${r.decididas || 0})` : `libera depois de ${R14.deleg} decisões suas fora do padrão (${r.manual[a]})`}</b></span>`);
+    b.setAttribute("aria-pressed", String(!!r.pol[a])); if (lib) b.onclick = () => alternarPolitica(a); else b.disabled = true; body.appendChild(b); });
+  if (r.hist.length) { body.appendChild(el("div", "sec-title", "Efeito das decisões"));
+    r.hist.slice(0, 2).forEach(h => body.appendChild(el("div", "card", `<h3>Semana ${h.semana}</h3>${h.linhas.map(l => `<p class="note">${l}</p>`).join("") || '<p class="note">Sem decisões.</p>'}`))); }
+}
+const pendentesReuniao = () => r14Ativo() ? r14().dec.filter(d => !d.conf).length : 0;
+if (SH_ATIVO) {
+  PAINEIS.reuniao = buildReuniao;
+  const cs0 = cartaoShopping;
+  cartaoShopping = function () { const c = cs0(); if (!r14Ativo()) return c;
+    const b = el("button", "btn", "Reunião da semana"); const atual = () => { const n = pendentesReuniao(), oc = r14().ocorr && !r14().ocorr.res; b.textContent = oc ? "Reunião da semana: ocorrência agora" : n ? `Reunião da semana (${n} em aberto)` : "Reunião da semana: decidido"; };
+    live(atual); b.onclick = () => openSheet("reuniao"); c.appendChild(b); return c; };
+  const m0 = FASE_CFG.brisa.missao;
+  FASE_CFG.brisa.missao = function () {
+    const r = r14Ativo() ? r14() : null;
+    if (r && r.ocorr && !r.ocorr.res) return { title: `${r.ocorr.ic} ${r.ocorr.nome}`, sub: "Atender agora ou deixar a ronda", p: 0, ring: "🛡️", go: () => openSheet("reuniao") };
+    const m = m0.call(this); if (m) return m;
+    const n = pendentesReuniao(); return n ? { title: `Reunião da semana: ${n} decisão(ões)`, sub: "Escolha cada uma: o padrão sozinho não conta", p: 0, ring: "🗂️", go: () => openSheet("reuniao") } : null;
+  };
+  const a0 = GANCHOS.assinatura;
+  GANCHOS.assinatura = () => { const r = S.shop && S.shop.r14; return (a0 ? a0() : "") + (r ? `|r14${r.sem}${r.dec.map(d => d.tipo + d.esc + d.conf).join(",")}${r.ocorr ? r.ocorr.res || "o" : ""}${JSON.stringify(r.pol)}${r.hist.length}` : ""); };
+  const ls0 = GANCHOS.listaShopping;
+  GANCHOS.listaShopping = body => { ls0(body); body.appendChild(listaRow("🗂️", "#dff0f1", "Reunião da semana", () => { const r = r14(); return r14Ativo() ? `${pendentesReuniao()} em aberto${r.ocorr && !r.ocorr.res ? `; agora: ${r.ocorr.nome}` : ""}` : "começa com o shopping aberto"; }, { kind: "shReuniao" })); };
+  gancho("painel", (sel, body) => { if (sel.kind === "shReuniao") { buildReuniao(body); return true; } return null; });
+  gancho("bRect", sel => sel.kind === "shReuniao" ? { x: 0, y: 30, w: W, h: H - 26 } : null);
 }
 </script>
 <script>
@@ -6028,6 +6379,7 @@ function drawParking() {
     forSaleSign(r.x + r.w / 2, r.y + r.h / 2 + 8, L);
   });
   // cars, back to front
+  STALLS.forEach(s => { if (s.res && !s.car) { ctx.fillStyle = "rgba(242,178,51,0.35)"; ctx.fillRect(s.x - 9, H + 20, 18, 22); } });   // 1.4: vaga reservada para o carro que está entrando
   pcars.slice().sort((a, b) => a.y - b.y).forEach(c => carTop(c.x, c.y, c.ang, c.color));
 }
 function drawDock(r) {
@@ -6869,7 +7221,7 @@ function buildBuilding(body, acts) {
   } else if (sel.kind === "sign") {
     head("📣", "#f6e3c4", "Fachada e gerência", () => tierNow().name);
     body.appendChild(statsBox([
-      ["Clientes na loja", () => `${customers.length}`],
+      typeof SH_ATIVO !== "undefined" && SH_ATIVO ? ["Pessoas no shopping", () => `${dentro()}`] : ["Clientes na loja", () => `${customers.length}`],
       ["Reputação", () => `★ ${S.rep.toFixed(1).replace(".", ",")}`],
       ["Gerente", () => S.mgrLvl ? `nv ${S.mgrLvl}` : "nenhum"],
     ]));
@@ -7575,7 +7927,7 @@ function resumoOperacao(t, o) {
 //   · Painel de trapaças (modo desenvolvedor): 7 toques na versão nas Configurações + código.
 //     Todo uso fica marcado no save (S.trapacas / CARREIRA.trapacas).
 // =====================================================================
-const APP_VERSAO = "1.3";
+const APP_VERSAO = "1.4";
 const SITE_JOGO = "https://danielcamposdasilva-tech.github.io/mercadinho/";
 const WHATS_SUPORTE = "5521988612660";
 const DEV_HASH = 1898547767;                  // código do modo desenvolvedor (só o hash fica no jogo)
@@ -7633,7 +7985,7 @@ function abrirRelato() {
   const $r = k => document.getElementById(k), txt = () => textoRelato($r("rlDesc").value, $r("rlDiag").checked, $r("rlAc").checked, id);
   const atualizar = () => { $r("rlPrev").textContent = txt(); };
   ["rlDesc", "rlDiag", "rlAc"].forEach(k => $r(k).addEventListener("input", atualizar)); ["rlDiag", "rlAc"].forEach(k => $r(k).addEventListener("change", atualizar)); atualizar();
-  $r("rlEnviar").onclick = () => { abrirExterno(`https://wa.me/${WHATS_SUPORTE}?text=${encodeURIComponent(txt())}`); hideModal(); toast(`Relato ${id} pronto no WhatsApp.`); };
+  $r("rlEnviar").onclick = () => { if (typeof regDiag === "function") regDiag("relato", { codigo: id, texto: txt() }, 2); abrirExterno(`https://wa.me/${WHATS_SUPORTE}?text=${encodeURIComponent(txt())}`); hideModal(); toast(`Relato ${id} pronto no WhatsApp.`); };
   $r("rlCopiar").onclick = async () => { try { await navigator.clipboard.writeText(txt()); toast("Texto copiado."); } catch (e) { const r = document.createRange(); r.selectNodeContents($r("rlPrev")); const s = getSelection(); s.removeAllRanges(); s.addRange(r); toast("Texto selecionado: copie com o menu do aparelho."); } };
   $r("rlFechar").onclick = hideModal;
   setTimeout(() => { const d = $r("rlDesc"); if (d) d.focus(); }, 60);
@@ -7734,6 +8086,272 @@ function abrirPainelDev() {
     const v = el("button", "plain mini", `<span>Mercadinho da Esquina · versão ${APP_VERSAO}</span>`); v.setAttribute("aria-label", `Versão ${APP_VERSAO}`); v.onclick = toqueVersao; body.appendChild(v);
   }; }
 if (MODO !== "menu") setTimeout(verificarNovaVersao, 4000);
+</script>
+<script>
+"use strict";
+// =====================================================================
+// 1.4: crédito opcional em todos os capítulos e no modo Livre.
+// "Crédito Mumbuca": nome escolhido pelo Daniel (Mumbuca é o nome do povo e da moeda do jogo); regras do jogo, sem ligação com instituições reais.
+// Regras: um contrato por vez; juros fixos de 12% no total; 16 parcelas, uma por fechamento (dia, ou
+// semana no shopping); a parcela nunca passa de 40% da receita bruta do fechamento nem deixa o saldo
+// negativo (o que faltar alonga o prazo, sem multa); quitação antecipada só com os juros da parcela atual.
+// Só os juros entram como despesa no resultado do dia; o valor emprestado e o principal das parcelas não
+// contam como lucro nem prejuízo (metas e gerente usam o resultado). Os juros do vermelho (5%) continuam.
+// No capítulo 8 antes da inauguração: só depois da licença de instalação, limite ligado ao aluguel já
+// pré-locado e cobrança começando 2 semanas depois da inauguração.
+// Nada muda numa partida que nunca contratou: o estado S.credito só existe depois do contrato.
+// =====================================================================
+const CR_CFG = { juros: 0.12, parcelas: 16, tetoReceita: 0.4, nome: "Crédito Mumbuca", pisos: [800, 1500, 2500, 3500, 4500, 6000, 8000, 8000], obraMin: 3000, obraMax: 8000, carenciaObra: 2 };
+const CR_SEMANA = () => NA_CARREIRA && (FASE === "brisa" || FASE === "grande");
+const crUnid = (n = 1) => CR_SEMANA() ? (n === 1 ? "semana" : "semanas") : (n === 1 ? "dia" : "dias");
+const crObraAntes = () => NA_CARREIRA && FASE === "grande" && typeof ob === "function" && S.obra && S.obra.fase !== "operacao";
+function limiteCredito() {
+  if (S.credito) return 0;
+  if (crObraAntes()) {
+    if (!(typeof licOk === "function" && licOk("instalacao"))) return 0;
+    const L = typeof lojasSh === "function" ? lojasSh() : null, alug = L ? ocupadas(L).reduce((a, u) => a + u.ocup.aluguel, 0) : 0;
+    return Math.round(Math.max(CR_CFG.obraMin, Math.min(CR_CFG.obraMax, alug * 6)) / 100) * 100;
+  }
+  const ordem = NA_CARREIRA && typeof FASES !== "undefined" && FASES[FASE] ? FASES[FASE].ordem : Math.min(7, S.tier || 0);
+  const piso = CR_CFG.pisos[Math.max(0, Math.min(7, ordem | 0))];
+  return Math.round(Math.min(piso * 4, Math.max(piso, Math.max(0, S.avgNet || 0) * 10)) / 100) * 100;
+}
+const motivoSemCredito = () => S.credito ? "Já existe um contrato: quite este antes de pedir outro." : crObraAntes() && !licOk("instalacao") ? "Na obra, o crédito abre depois da licença de instalação." : "";
+function simularCredito(valor) {
+  const juros = Math.round(valor * CR_CFG.juros), total = valor + juros, parcela = Math.ceil(total / CR_CFG.parcelas);
+  const vermelho = Math.round(valor * (Math.pow(1 + DEBT_INTEREST, CR_CFG.parcelas) - 1));
+  return { valor, juros, total, parcela, vermelho, inicio: crObraAntes() ? `${CR_CFG.carenciaObra} semanas depois da inauguração` : `no próximo fechamento (${crUnid()} ${S.day})` };
+}
+function contratarCredito(valor) {
+  const lim = limiteCredito(); valor = Math.round(valor);
+  if (!lim || valor <= 0 || valor > lim) { toast(motivoSemCredito() || "Valor acima do limite."); return false; }
+  const s = simularCredito(valor);
+  S.credito = { valor, juros: s.juros, total: s.total, parcela: s.parcela, principalRest: valor, jurosRest: s.juros, pagas: 0, alongado: 0, inicio: S.day, aguardaObra: crObraAntes(), carenciaAte: crObraAntes() ? null : S.day, ultBruto: 0 };
+  S.money += valor;                                              // fora do resultado do dia (não é lucro)
+  S.today.linhas = (S.today.linhas || []).concat([[`${CR_CFG.nome}: valor recebido (fora do resultado)`, `+M ${fmt(valor)}`]]);
+  banner(`🏦 Crédito de M ${fmt(valor)} contratado`, "#2e7a57"); anunciar(`Crédito de M ${fmt(valor)} contratado. Parcela de M ${fmt(s.parcela)} por ${crUnid()}, começando ${s.inicio}.`);
+  if (typeof regDiag === "function") regDiag("credito", { acao: "contratou", valor });
+  save(); lastSig = ""; renderSheet(); return true;
+}
+const custoQuitar = () => { const c = S.credito; return c ? Math.round(c.principalRest + Math.min(c.jurosRest, c.juros / CR_CFG.parcelas)) : 0; };
+function quitarCredito() {
+  const c = S.credito; if (!c) return false; const v = custoQuitar();
+  if (S.money < v) { toast(`Para quitar agora faltam M ${fmt(v - S.money)}.`); return false; }
+  const jur = Math.round(Math.min(c.jurosRest, c.juros / CR_CFG.parcelas));
+  S.money -= v; S.today.outrasDesp = (S.today.outrasDesp || 0) + jur;
+  S.today.linhas = (S.today.linhas || []).concat([[`${CR_CFG.nome}: quitação antecipada (juros M ${fmt(jur)})`, `-M ${fmt(v)}`]]);
+  encerrarCredito("quitado antes"); banner("🏦 Crédito quitado", "#2e7a57"); save(); lastSig = ""; renderSheet(); return true;
+}
+function encerrarCredito(como) {
+  const c = S.credito; S.creditoHist = (S.creditoHist || []).concat([{ valor: c.valor, juros: c.juros, inicio: c.inicio, fim: S.day, como }]).slice(-5);
+  if (typeof regDiag === "function") regDiag("credito", { acao: como, valor: c.valor });
+  delete S.credito;
+}
+function emCarencia(c) {
+  if (c.aguardaObra) { if (S.obra && S.obra.inaugurado != null) { c.aguardaObra = false; c.carenciaAte = S.obra.inaugurado + CR_CFG.carenciaObra; } else return true; }
+  return S.day < c.carenciaAte;
+}
+// cobra uma parcela (ou parte dela); devolve o valor pago
+function cobrarParcela(c, brutoRef) {
+  const restante = c.principalRest + c.jurosRest; if (restante <= 0) return 0;
+  const devido = Math.min(c.parcela, restante), teto = CR_CFG.tetoReceita * Math.max(0, brutoRef);
+  const pago = Math.round(Math.max(0, Math.min(devido, teto, S.money)) * 100) / 100; if (pago < devido - 0.01) c.alongado++;
+  if (pago <= 0) return 0;
+  const jur = Math.min(c.jurosRest, pago * c.juros / c.total); c.jurosRest -= jur; c.principalRest = Math.max(0, c.principalRest - (pago - jur));
+  if (c.principalRest + c.jurosRest < 0.5) { c.principalRest = 0; c.jurosRest = 0; }
+  S.money -= pago; c.pagas += pago >= devido - 0.01 ? 1 : 0;
+  return { pago, jur };
+}
+const brutoHoje = () => { const t = S.today; return (t.sales || 0) + (t.outras || 0) + ((t.park && t.park.fees) || 0); };
+{ const endDay0 = endDay;
+  endDay = function () {
+    const c = S.credito;
+    if (c && !emCarencia(c)) {
+      const r = cobrarParcela(c, Math.max(brutoHoje(), c.ultBruto || 0));
+      if (r) { S.today.outrasDesp = (S.today.outrasDesp || 0) + r.jur;          // só os juros entram no resultado
+        S.today.linhas = (S.today.linhas || []).concat([[`${CR_CFG.nome}: parcela (juros M ${fmt(r.jur)}, principal fora do resultado)`, `-M ${fmt(r.pago)}`]]); }
+      else S.today.linhas = (S.today.linhas || []).concat([[`${CR_CFG.nome}: parcela adiada (receita ou saldo baixos, prazo alongado)`, "M 0"]]);
+    }
+    endDay0();
+    const c2 = S.credito;
+    if (c2) { const ld = S.lastDay || {}; c2.ultBruto = (ld.sales || 0) + (ld.outras || 0) + ((ld.park && ld.park.fees) || 0);
+      if (c2.principalRest + c2.jurosRest <= 0) { encerrarCredito("quitado"); banner("🏦 Crédito quitado", "#2e7a57"); save(); } }
+  };
+}
+{ const off0 = offlineProgress;
+  offlineProgress = function () {
+    const r = off0(); const c = S.credito;
+    if (r && c && r.days > 0) {
+      let pago = 0, n = 0;
+      for (let d = 0; d < r.days && S.credito; d++) { if (emCarencia(c)) continue; const x = cobrarParcela(c, Math.max(c.ultBruto || 0, Math.max(0, S.avgNet || 0) * 3)); if (x) { pago += x.pago; n++; } }
+      if (pago > 0) { r.linhas = (r.linhas || []).concat([[`${CR_CFG.nome}: parcelas pagas enquanto você esteve fora`, `${n} · -M ${fmt(pago)}`]]); r.gain -= pago; }
+      if (c.principalRest + c.jurosRest <= 0) encerrarCredito("quitado");
+    }
+    return r;
+  };
+}
+// ---------- painel ----------
+function buildCredito(body) {
+  const c = S.credito;
+  head("🏦", "#e3eef7", CR_CFG.nome, c ? `Contrato ativo: faltam M ${fmt(Math.round(c.principalRest + c.jurosRest))}` : `Limite agora: M ${fmt(limiteCredito())}`);
+  body.appendChild(el("p", "note", `Crédito opcional, para investir com planejamento. Juros fixos de ${Math.round(CR_CFG.juros * 100)}% no total, ${CR_CFG.parcelas} parcelas (uma por ${crUnid()}), sem multa. A parcela nunca passa de ${Math.round(CR_CFG.tetoReceita * 100)}% da receita do fechamento nem deixa o saldo negativo: se faltar, o prazo se alonga. Ficar no vermelho continua custando ${Math.round(DEBT_INTEREST * 100)}% por fechamento.`));
+  if (c) {
+    const rest = Math.round(c.principalRest + c.jurosRest), car = c.aguardaObra ? `começa ${CR_CFG.carenciaObra} semanas depois da inauguração` : S.day < c.carenciaAte ? `começa em ${c.carenciaAte - S.day} ${crUnid(c.carenciaAte - S.day)}` : "em andamento";
+    body.appendChild(el("div", "card", `<h3>Contrato ativo</h3><table><tr><td>Valor recebido</td><td>M ${fmt(c.valor)}</td></tr><tr><td>Juros do contrato</td><td>M ${fmt(c.juros)}</td></tr><tr><td>Parcela</td><td>M ${fmt(c.parcela)} por ${crUnid()} (${car})</td></tr>
+      <tr><td>Parcelas pagas</td><td>${c.pagas} de ${CR_CFG.parcelas}${c.alongado ? ` · ${c.alongado} adiada(s)` : ""}</td></tr><tr><td><b>Falta pagar</b></td><td><b>M ${fmt(rest)}</b></td></tr></table>`));
+    const q = el("button", "btn", `Quitar agora (M ${fmt(custoQuitar())})`); q.setAttribute("aria-label", `Quitar o crédito agora por M ${fmt(custoQuitar())}, só com os juros da parcela atual`); q.onclick = quitarCredito; body.appendChild(q);
+    return;
+  }
+  const lim = limiteCredito();
+  if (!lim) { body.appendChild(el("p", "note", `<b>${motivoSemCredito() || "Sem limite disponível agora."}</b>`)); return; }
+  body.appendChild(el("p", "note", crObraAntes() ? `Na obra, o limite depende do aluguel já assinado na pré-locação (6 semanas dele, de M ${fmt(CR_CFG.obraMin)} a M ${fmt(CR_CFG.obraMax)}).` : `O limite acompanha o lucro médio da loja (cerca de 10 ${crUnid(10)} dele).`));
+  [0.25, 0.5, 1].forEach(f => { const v = Math.max(100, Math.round(lim * f / 100) * 100), s = simularCredito(v);
+    const card = el("div", "card", `<div class="req"><span><b>M ${fmt(v)}</b></span><b>${CR_CFG.parcelas} × M ${fmt(s.parcela)}</b></div>
+      <p class="note">Juros M ${fmt(s.juros)} · total M ${fmt(s.total)} · cobrança ${s.inicio}. No vermelho, os mesmos M ${fmt(v)} por ${CR_CFG.parcelas} ${crUnid(2)} custariam cerca de M ${fmt(s.vermelho)} de juros.</p>`);
+    const b = el("button", "btn mini", `Contratar M ${fmt(v)}`); b.setAttribute("aria-label", `Contratar crédito de M ${fmt(v)}: ${CR_CFG.parcelas} parcelas de M ${fmt(s.parcela)}, juros de M ${fmt(s.juros)}, total M ${fmt(s.total)}`);
+    b.onclick = () => contratarCredito(v); card.appendChild(b); body.appendChild(card); });
+  if (S.creditoHist && S.creditoHist.length) body.appendChild(el("p", "note", `Contratos anteriores: ${S.creditoHist.map(h => `M ${fmt(h.valor)} (${h.como})`).join(", ")}.`));
+}
+PAINEIS.credito = buildCredito;
+const crSub = () => S.credito ? `Contrato ativo · faltam M ${fmt(Math.round(S.credito.principalRest + S.credito.jurosRest))}` : limiteCredito() ? `Limite M ${fmt(limiteCredito())}` : (motivoSemCredito() || "Sem limite agora");
+{ const bu0 = buildUpgrade;
+  buildUpgrade = (body, acts) => { bu0(body, acts);
+    const r = el("button", "row", `<div class="ic" style="background:#e3eef7">🏦</div><div><div class="t">Crédito (opcional)</div><div class="s"></div></div><div class="go">Ver</div>`);
+    const s = r.querySelector(".s"); live(() => { s.textContent = crSub(); }); r.onclick = () => openSheet("credito"); body.appendChild(r); };
+}
+{ const bl0 = buildLista;
+  buildLista = body => { bl0(body);
+    const b = el("button", "plain", `<span>🏦 Crédito (opcional): </span><span class="crS"></span>`); const s = b.querySelector(".crS"); live(() => { s.textContent = crSub(); });
+    b.onclick = () => openSheet("credito"); body.appendChild(b); };
+}
+{ const mc = document.getElementById("moneyChip");
+  if (mc) { mc.style.cursor = "pointer"; mc.title = "Saldo e crédito"; mc.addEventListener("click", () => { if (typeof openSheet === "function" && MODO !== "menu") openSheet("credito"); }); }
+}
+</script>
+<script>
+"use strict";
+// =====================================================================
+// 1.4: diagnóstico automático, ligado por padrão com aviso (pode ser desligado nas Configurações).
+// Destino: planilha do Daniel no Google Drive, por um app da web do Apps Script (endereço em versao.json,
+// campo "diag", ou na constante abaixo). Sem login: identificador aleatório por instalação, que o jogador
+// pode trocar. Nunca envia nome, e-mail, IP (o Apps Script não recebe) nem o save completo.
+// Fila local limitada (200 eventos), envio em lote ao abrir, a cada 3 minutos e ao sair; sem internet a
+// fila espera. Cada evento tem id aleatório: o servidor ignora repetidos, então reenviar não duplica.
+// Não usa Math.random (as partidas e os testes continuam determinísticos) e não roda nada no loop de desenho.
+// =====================================================================
+const DIAG_URL_PADRAO = "";                     // preenchido quando o app da web do Apps Script for publicado
+const CHAVE_DIAG = "mercadinho-diag";
+const DIAG_MAX = 200, DIAG_LOTE = 50;
+const rndId = (n = 10) => { const a = new Uint8Array(n); try { crypto.getRandomValues(a); } catch (e) { for (let i = 0; i < n; i++) a[i] = (Date.now() * (i + 7)) & 255; } return [...a].map(b => "abcdefghijkmnpqrstuvwxyz23456789"[b % 32]).join(""); };
+let DG = null;
+function dg() {
+  if (DG) return DG;
+  try { DG = JSON.parse(localStorage.getItem(CHAVE_DIAG) || "null"); } catch (e) { DG = null; }
+  DG = Object.assign({ id: rndId(8), ligado: true, avisado: false, fila: [], url: "", iniciados: [], hb: 0, limpo: true }, DG || {});
+  return DG;
+}
+function gravarDg() { try { localStorage.setItem(CHAVE_DIAG, JSON.stringify(dg())); } catch (e) {} }
+const urlDiag = () => dg().url || DIAG_URL_PADRAO;
+// tira e-mails e números longos (telefone, documento) de qualquer texto livre
+const limparTexto = t => String(t || "").replace(/[\w.+-]+@[\w-]+\.[\w.]+/g, "[e-mail]").replace(/\+?\d[\d\s().-]{7,}\d/g, "[número]").slice(0, 1500);
+function regDiag(tipo, dados, prio = 0) {
+  const d = dg(); if (!d.ligado || MODO === "previa") return;
+  if (dados && dados.texto) dados.texto = limparTexto(dados.texto);
+  d.fila.push({ i: rndId(12), t: tipo, ts: Date.now(), v: APP_VERSAO, p: plataforma(), m: MODO, f: FASE || "", d: typeof S !== "undefined" && S ? S.day : 0, pr: prio, x: dados || {} });
+  while (d.fila.length > DIAG_MAX) { const k = d.fila.findIndex(e => e.pr === 0); d.fila.splice(k >= 0 ? k : 0, 1); }   // descarta primeiro os de menor prioridade
+  gravarDg();
+}
+let enviando = false;
+function enviarDiag(saindo) {
+  const d = dg(), url = urlDiag(); if (!d.ligado || !url || !d.fila.length || enviando) return;
+  if (navigator.onLine === false) return;
+  const lote = d.fila.slice(0, DIAG_LOTE), corpo = JSON.stringify({ inst: d.id, eventos: lote }), ids = new Set(lote.map(e => e.i));
+  const tirar = () => { d.fila = d.fila.filter(e => !ids.has(e.i)); gravarDg(); };
+  if (saindo && navigator.sendBeacon) { try { if (navigator.sendBeacon(url, new Blob([corpo], { type: "text/plain" }))) tirar(); } catch (e) {} return; }
+  enviando = true;
+  fetch(url, { method: "POST", mode: "no-cors", body: corpo, headers: { "Content-Type": "text/plain" } }).then(() => { tirar(); enviando = false; if (d.fila.length) setTimeout(enviarDiag, 3000); }).catch(() => { enviando = false; });
+}
+function alternarDiag() {
+  const d = dg(); d.ligado = !d.ligado; if (!d.ligado) d.fila = []; gravarDg();
+  toast(d.ligado ? "Envio de dados de diagnóstico ligado." : "Envio desligado. A fila que não tinha sido enviada foi apagada."); lastSig = ""; renderSheet();
+}
+function trocarIdDiag() { const d = dg(); d.id = rndId(8); d.fila = []; gravarDg(); toast(`Novo identificador: ${d.id}`); lastSig = ""; renderSheet(); }
+// endereço da planilha pode chegar pelo versao.json do site (sem precisar de APK novo)
+function configDiag() {
+  if (MODO === "previa") return;
+  const base = ehNativo() ? SITE_JOGO : (location.protocol.startsWith("http") ? "" : null); if (base == null) return;
+  fetch(base + "versao.json?t=" + Date.now(), { cache: "no-store" }).then(r => r.ok ? r.json() : null).then(v => {
+    if (v && typeof v.diag === "string" && /^https:\/\/script\.google(usercontent)?\.com\//.test(v.diag) && v.diag !== dg().url) { dg().url = v.diag; gravarDg(); enviarDiag(); }
+  }).catch(() => {});
+}
+// ---------- sinais coletados ----------
+if (MODO !== "previa") {
+  const d = dg(), agora = Date.now();
+  // encerramento sem saída limpa (batimento recente e sem pagehide): provável fechamento forçado ou travamento
+  if (!d.limpo && d.hb && agora - d.hb < 10 * 60e3) regDiag("encerramento", { haS: Math.round((agora - d.hb) / 1000) }, 1);
+  d.limpo = false; d.hb = agora; gravarDg();
+  setInterval(() => { const x = dg(); x.hb = Date.now(); x.limpo = false; gravarDg(); }, 10e3);
+  // tempo ativo (visível e com toque no último minuto) e visível parado
+  let ultToque = agora, tAtivo = 0, tVisivel = 0, tUlt = agora, visivelDesde = agora;
+  ["pointerdown", "keydown", "touchstart"].forEach(ev => addEventListener(ev, () => { ultToque = Date.now(); }, { passive: true, capture: true }));
+  const contar = () => { const t = Date.now(), dt = Math.min(5000, t - tUlt); tUlt = t; if (document.visibilityState === "visible") { tVisivel += dt; if (t - ultToque < 60e3) tAtivo += dt; } };
+  // congelamento: o relógio não andou por mais de 5 s com a tela visível o tempo todo
+  setInterval(() => { const t = Date.now(), gap = t - tUlt; if (document.visibilityState === "visible" && gap > 5000 && t - visivelDesde > gap + 1000) regDiag("congelamento", { ms: gap }, 1); contar(); }, 1000);
+  const fecharSessao = () => { contar(); if (tVisivel > 5000) regDiag("tempo", { ativoS: Math.round(tAtivo / 1000), visivelS: Math.round(tVisivel / 1000) }); tAtivo = 0; tVisivel = 0; };
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") { fecharSessao(); enviarDiag(true); } else { visivelDesde = Date.now(); tUlt = Date.now(); } });
+  addEventListener("pagehide", () => { fecharSessao(); const x = dg(); x.limpo = true; gravarDg(); enviarDiag(true); });
+  // erros de JavaScript (até 5 diferentes por sessão)
+  const vistos = new Set();
+  const erro = (msg, onde) => { msg = String(msg || "").slice(0, 200); if (vistos.has(msg) || vistos.size >= 5) return; vistos.add(msg); regDiag("erro", { msg, onde: String(onde || "").slice(0, 120) }, 2); };
+  addEventListener("error", e => erro(e.message, (e.filename || "").split("/").pop() + ":" + e.lineno));
+  addEventListener("unhandledrejection", e => erro(e.reason && (e.reason.message || e.reason), "promessa"));
+  (window.__erros || []).forEach(e => erro(e.m, "início"));
+  if (MODO !== "menu") {
+    regDiag("sessao", { aparelho: aparelho(), tela: `${innerWidth}x${innerHeight}`, saldo: Math.round(S.money), cap: CFG ? CFG.capitulo : null, trapaca: !!(S.trapacas || (CARREIRA && CARREIRA.trapacas)) });
+    if (NA_CARREIRA && FASE && !d.iniciados.includes(FASE)) { d.iniciados.push(FASE); gravarDg(); regDiag("capitulo", { acao: "iniciou", dia: S.day }); }
+  }
+  setTimeout(() => { configDiag(); enviarDiag(); }, 5000);
+  setInterval(() => enviarDiag(), 180e3);
+}
+// fechamento de cada dia: indicadores agregados (não cada clique) e bloqueios
+let diagVermelho = 0, diagObraAviso = -99;
+if (typeof endDay === "function" && MODO !== "menu" && MODO !== "previa") { const e0 = endDay;
+  endDay = function () {
+    e0();
+    const ld = S.lastDay || {}, x = { saldo: Math.round(S.money), net: Math.round(ld.net || 0), atend: ld.served || 0, perd: ld.lost || 0, rep: Math.round((S.rep || 0) * 10) / 10 };
+    if (NA_CARREIRA && FASE === "cajueiro" && S.atac) { const a = S.atac, dd = a.dias[0] || {}; Object.assign(x, { fardos: dd.fardos, multas: dd.multas, vazias: a.pos.slice(0, a.nPos).filter(p => p.sec && !p.fardos).length, auto: !!a.auto, alto: a.pos.reduce((s, p) => s + (p.alto || 0), 0) }); }
+    if (NA_CARREIRA && (FASE === "brisa" || FASE === "grande") && S.shop && S.shop.dias && S.shop.dias[0]) { const r = S.shop.dias[0]; Object.assign(x, { recusados: r.recusados, sat: Math.round(r.sat * 100), ocup: Math.round(r.ocupacao * 100) }); }
+    if (NA_CARREIRA && FASE === "grande" && S.obra) Object.assign(x, { obra: S.obra.fase, pct: Math.round(S.obra.pct) });
+    if (S.credito) x.credito = Math.round(S.credito.principalRest + S.credito.jurosRest);
+    regDiag("dia", x);
+    diagVermelho = S.money < 0 ? diagVermelho + 1 : 0;
+    if (diagVermelho === 3) regDiag("bloqueio", { tipo: "vermelho", saldo: Math.round(S.money) }, 1);
+    if (NA_CARREIRA && FASE === "grande" && S.obra && S.obra.fase !== "operacao" && typeof previsaoObra === "function" && S.day - diagObraAviso >= 5) {
+      const p = previsaoObra(), m = motivoParada(); if ((p && p.sobra < 0) || m === "dinheiro") { diagObraAviso = S.day; regDiag("bloqueio", { tipo: "obra", motivo: m, sobra: p ? p.sobra : null, pct: Math.round(S.obra.pct) }, 1); } }
+  };
+}
+if (typeof concluirFase === "function") { const c0 = concluirFase; concluirFase = function (forcar) { const r = c0(forcar); if (NA_CARREIRA && S.fase && S.fase.concluida) regDiag("capitulo", { acao: forcar ? "concluiu (trapaça)" : "concluiu", dia: S.day }, 1); return r; }; }
+if (typeof marcarTrapaca === "function") { const m0 = marcarTrapaca; marcarTrapaca = function (oque) { regDiag("trapaca", { oque }); return m0(oque); }; }
+if (typeof aplicarResgate === "function") { const a0 = aplicarResgate; aplicarResgate = function (origem) { const r = a0(origem); if (r) regDiag("resgate", { origem, antes: r.antes, depois: r.depois }, 1); return r; }; }
+// ---------- aviso da primeira abertura e controle nas Configurações ----------
+function avisoDiag() {                // aviso na tela inicial (não cobre o cenário do jogo); aparece uma vez
+  const d = dg(), box = document.querySelector("#menu .menu-box"); if (d.avisado || !d.ligado || !box) return;
+  const b = document.createElement("div"); b.id = "avisoDiag"; b.setAttribute("role", "status"); b.className = "menu-nota";
+  b.style.cssText = "background:#1f3a2d;color:#eef4ef;border-radius:12px;padding:10px 12px;text-align:left;margin-top:10px";
+  b.innerHTML = `Este jogo envia <b>dados anônimos de diagnóstico</b> (erros, travamentos e em que capítulo cada partida está) para ajudar a corrigir problemas. Nada de nome, e-mail ou contatos. Dá para desligar em Configurações.
+    <div style="display:flex;gap:8px;margin-top:8px"><button id="dgOk" class="btn mini">Entendi</button><button id="dgNao" class="plain mini"><span>Desligar</span></button></div>`;
+  box.appendChild(b); d.avisado = true; gravarDg();
+  const fim = () => b.remove();
+  b.querySelector("#dgOk").onclick = fim; b.querySelector("#dgNao").onclick = () => { fim(); const x = dg(); x.ligado = false; x.fila = []; gravarDg(); toast("Envio de dados de diagnóstico desligado."); };
+}
+if (MODO === "menu") setTimeout(avisoDiag, 300);
+{ const bs0 = buildSettings;
+  buildSettings = body => { bs0(body); const d = dg();
+    const t = el("button", "plain toggle", `<span>Enviar dados de diagnóstico: <b>${d.ligado ? "sim" : "não"}</b></span>`); t.setAttribute("aria-pressed", String(d.ligado)); t.onclick = alternarDiag;
+    const i = el("p", "note", `Identificador desta instalação: <b>${d.id}</b>${d.fila.length ? ` · ${d.fila.length} evento(s) na fila` : ""}. São enviados erros, travamentos, tempo de jogo e o resumo de cada dia (saldo, capítulo, atendimentos), nunca nome, e-mail ou o save completo.`);
+    const tr = el("button", "plain mini", "<span>Trocar identificador</span>"); tr.onclick = trocarIdDiag;
+    const ref = body.querySelector(".danger"); [t, i, tr].forEach(n => body.insertBefore(n, ref ? ref.previousSibling : null)); };
+}
 </script>
 <script>
 "use strict";
