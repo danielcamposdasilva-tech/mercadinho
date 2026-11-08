@@ -996,12 +996,12 @@ function resetGear() {
   // duas entradas: carrinhos ficam mais do lado do estacionamento, cestas mais do lado da avenida
   if (ENT2) { station2.c = Math.floor(S.gear.carts * 0.25); station2.b = Math.ceil(S.gear.baskets * 0.6); station.c -= station2.c; station.b -= station2.b; }
 }
-function syncCollectors() { while (collectors.length < S.gear.collectors) collectors.push({ id: 200 + collectors.length, x: STATION.x + 36, y: FZ + 56, state: "idle", path: [], b: 0, c: 0, skin: pick(SKIN), hair: pick(HAIR) }); }
+function syncCollectors() { while (collectors.length < S.gear.collectors) collectors.push({ id: 200 + collectors.length, k: collectors.length, x: STATION.x + 36, y: FZ + 56, state: "idle", path: [], b: 0, c: 0, skin: pick(SKIN), hair: pick(HAIR) }); }
 function syncWorkers() {
   SECTORS.forEach((d, i) => {
     const st = S.sec[d.id], have = workers.filter(w => w.sec === i).length, want = st.open && i < slots() ? st.staff : 0;
     for (let k = have; k < want; k++)
-      workers.push({ id: 100 + workers.length, sec: i, x: P.whDoor.x + k * 6, y: P.whDoor.y, state: "idle", carry: 0, path: [], skin: pick(SKIN), hair: pick(HAIR) });
+      workers.push({ id: 100 + workers.length, sec: i, k, x: P.whDoor.x + k * 6, y: P.whDoor.y, state: "idle", carry: 0, path: [], skin: pick(SKIN), hair: pick(HAIR) });
   });
 }
 function moveTo(e, tx, ty, speed, dt) {
@@ -1459,11 +1459,11 @@ function update(dt) {
     if (w.state === "idle" && w.tsec != null) w.tsec = null;
     if (w.state === "idle" && GANCHOS.ajudaRepositor) { const o = S.sec[SECTORS[w.sec].id]; if (!(shelfCap(o.shelfLvl) - o.shelf - pending[SECTORS[w.sec].id] > 0 && o.wh > 0)) { const t = GANCHOS.ajudaRepositor(w); if (t != null) w.tsec = t; } }
     const ws = w.tsec != null ? w.tsec : w.sec;          // capítulo 4: com encarregado de reposição, quem está sem serviço ajuda outro setor
-    const d = SECTORS[ws], st = S.sec[d.id], sh = SHELVES[ws], sp = staffSpd(S.sec[SECTORS[w.sec].id].staffLvl);
+    const d = SECTORS[ws], st = S.sec[d.id], sh = SHELVES[ws], sp = staffSpd(nvRep(w.sec, w.k || 0));
     if (w.state === "idle") {
       const space = shelfCap(st.shelfLvl) - st.shelf - pending[d.id];
       if (space > 0 && st.wh > 0) {
-        const n = Math.min(staffCarry(st.staffLvl), st.wh, space);
+        const n = Math.min(staffCarry(nvRep(w.sec, w.k || 0)), st.wh, space);
         st.wh -= n; w.carry = n; pending[d.id] += n; w.state = "go";
         const a = corredorPara(P.whDoor.x, sh.cx); w.aisle = a;
         w.path = [{ x: a, y: P.whDoor.y }, { x: a, y: sh.top }, { x: sh.cx + (wi % 3 - 1) * 18, y: sh.top }];
@@ -1534,7 +1534,7 @@ function update(dt) {
     const head = laneQueue(l)[0], ln = lanes[l];
     if (head && head.state === "queue" && head.x === LANES[l].serve.x && head.y === LANES[l].serve.y) {
       const items = head.plan.reduce((a, p) => a + p.got, 0);
-      if (ln.servingId !== head.id) { if (DIV) inicioAtendimento(l, head); ln.servingId = head.id; ln.total = ln.timer = cashTime(S.cashLvl) * items + 0.25; }
+      if (ln.servingId !== head.id) { if (DIV) inicioAtendimento(l, head); ln.servingId = head.id; ln.total = ln.timer = cashTime(nvCaixa(l)) * items + 0.25; }
       ln.timer -= dt;
       if (ln.timer <= 0) {
         const mult = branchMult() * streakMult();
@@ -1554,16 +1554,16 @@ function update(dt) {
 
   // Collectors bring baskets and carts back from the checkouts
   for (const w of collectors) {
-    const sp = colSpeed(S.gear.colLvl);
+    const sp = colSpeed(nvCol(w.k || 0));
     if (DIV && (w.state === "ajuda" || w.state === "acompanha")) { passoAjuda(w, sp, dt); continue; }
     if (DIV && w.state === "idle") { const c = clientePedindo(w); if (c) { iniciarAjuda(w, c); continue; } }   // atender quem pediu ajuda vem antes das cestas
     if (w.state === "idle") {
       let best = -1, n = 0;
-      piles.forEach((p, l) => { if (l >= LANES.length) return; const k = p.b + p.c - collectors.filter(o => o !== w && o.target === l).length * colCarry(S.gear.colLvl); if (k > n) { n = k; best = l; } });
+      piles.forEach((p, l) => { if (l >= LANES.length) return; const k = p.b + p.c - collectors.filter(o => o !== w && o.target === l).reduce((x, o) => x + colCarry(nvCol(o.k || 0)), 0); if (k > n) { n = k; best = l; } });
       if (best >= 0) { w.target = best; w.state = "go"; w.path = [{ x: w.x, y: FZ + 134 }, { x: pileX(best), y: FZ + 134 }]; }
     } else if (w.state === "go") {
       if (follow(w, sp, dt)) {
-        const p = piles[w.target], cap = colCarry(S.gear.colLvl);
+        const p = piles[w.target], cap = colCarry(nvCol(w.k || 0));
         w.c = Math.min(p.c, cap); p.c -= w.c; w.b = Math.min(p.b, cap - w.c); p.b -= w.b;
         w.dest = ENT2 && station2.b + station2.c < station.b + station.c ? 1 : 0;   // duas entradas: leva para as cestas mais vazias
         const PS = w.dest ? STATION2 : STATION;
@@ -1666,7 +1666,8 @@ const occupied = () => STALLS.filter(s => s.car || s.res).length;
 const parkWage = () => 2 + S.tier;                     // per attendant per day, like a cashier
 const parkWages = () => S.park.staff * parkWage();
 const parkTrain = (t = S.park.train) => Math.max(0.35, Math.pow(0.85, t));
-function gateTime(which, staff = S.park.staff, train = S.park.train) {
+function gateTime(which, staff = S.park.staff, train = null) {
+  if (train == null) train = typeof nvPark === "function" ? nvPark(which === "out" ? 0 : 1) : S.park.train;   // 1.5: nível de quem está na cabine
   if (!CANCELA) return 0.4;                          // sem cancela: o carro só reduz e passa
   const manned = which === "out" ? staff >= 1 : staff >= 2, helper = which === "out" ? staff >= 3 : staff >= 4;
   if (!manned) return which === "out" ? PK.machineOut : PK.machineIn;
@@ -7024,6 +7025,99 @@ function hideModal() {
 <script>
 "use strict";
 // =====================================================================
+// 1.5: evolução individual da equipe. Cada repositor, operador de caixa, carrinheiro e atendente de
+// cancela tem nome e nível próprios; o treino é pago por pessoa. Os campos antigos de nível da equipe
+// (staffLvl, cashLvl, colLvl, park.train) viram o "piso": na migração cada pessoa começa nele, e se algum
+// capítulo subir o piso (cenário inicial), quem está abaixo sobe junto. Contratados novos começam no nível 0.
+// =====================================================================
+const NV_CFG = { fatorCusto: 0.6 };
+const NOMES_EQ = ["Ana", "Bruno", "Carla", "Davi", "Elisa", "Fábio", "Gabi", "Hugo", "Iara", "João", "Kátia", "Luan", "Marta", "Nilo", "Olga", "Paulo", "Quitéria", "Rafa",
+  "Sônia", "Téo", "Úrsula", "Vítor", "Wanda", "Yuri", "Zélia", "Caio", "Dora", "Enzo", "Flora", "Gil", "Helô", "Igor", "Joana", "Lia", "Miro", "Nara", "Otto", "Pietra", "Ravi", "Saulo"];
+function nomeLivre() {
+  const usados = new Set(); const ver = a => (a || []).forEach(p => usados.add(p.n));
+  SECTORS.forEach(d => ver(S.sec[d.id].eq)); ver(S.cashEq); ver(S.gear.colEq); ver(S.park.eq);
+  const livres = NOMES_EQ.filter(n => !usados.has(n));
+  if (livres.length) return livres[(usados.size * 7) % livres.length];       // sem sorteio: não mexe nas partidas
+  return `${NOMES_EQ[usados.size % NOMES_EQ.length]} ${Math.floor(usados.size / NOMES_EQ.length) + 1}`;
+}
+// ajusta uma lista de pessoas ao tamanho da equipe e ao piso de nível
+function ajustarEq(lista, n, piso, baseKey, dono) {
+  if (!Array.isArray(dono[lista])) { dono[lista] = []; for (let k = 0; k < n; k++) dono[lista].push({ n: nomeLivre(), v: piso }); dono[baseKey] = piso; return dono[lista]; }
+  const a = dono[lista];
+  if ((dono[baseKey] || 0) < piso) { a.forEach(p => { if (p.v < piso) p.v = piso; }); dono[baseKey] = piso; }
+  while (a.length < n) a.push({ n: nomeLivre(), v: 0 });
+  if (a.length > n) a.length = n;
+  return a;
+}
+const eqRep = id => { const st = S.sec[id]; return ajustarEq("eq", st.staff, st.staffLvl || 0, "eqBase", st); };
+const eqCaixa = () => ajustarEq("cashEq", S.cashiers, S.cashLvl || 0, "cashEqBase", S);
+const eqCol = () => ajustarEq("colEq", S.gear.collectors, S.gear.colLvl || 0, "colEqBase", S.gear);
+const eqPark = () => ajustarEq("eq", S.park.staff, S.park.train || 0, "eqBase", S.park);
+function equipeSync() { SECTORS.forEach(d => eqRep(d.id)); eqCaixa(); eqCol(); eqPark(); }
+// nível de quem está trabalhando
+const nvRep = (secIdx, k) => { const a = eqRep(SECTORS[secIdx].id); return a[k] ? a[k].v : (S.sec[SECTORS[secIdx].id].staffLvl || 0); };
+const nvCaixa = l => { const a = eqCaixa(); return a[l] ? a[l].v : (S.cashLvl || 0); };      // caixa de volante (capítulo 4) usa o piso
+const nvCol = k => { const a = eqCol(); return a[k] ? a[k].v : (S.gear.colLvl || 0); };
+const nvPark = k => { const a = eqPark(); return a[k] ? a[k].v : (S.park.train || 0); };
+// ---------- custo e treino de uma pessoa ----------
+const TIPOS_EQ = {
+  rep: { lista: ref => eqRep(ref), custo: (v, ref) => Math.ceil(SECTORS.find(d => d.id === ref).base * 1.5 * Math.pow(G, v) * NV_CFG.fatorCusto),
+    efeito: v => `velocidade ${staffSpd(v)}, leva ${staffCarry(v)}`, prox: v => `leva ${staffCarry(v + 1)}, mais rápido`, papel: "repositor", max: () => false },
+  caixa: { lista: () => eqCaixa(), custo: v => Math.ceil(10 * Math.pow(G, v) * NV_CFG.fatorCusto),
+    efeito: v => `${cashTime(v).toFixed(2).replace(".", ",")} s por item`, prox: v => `${cashTime(v + 1).toFixed(2).replace(".", ",")} s por item`, papel: "operador de caixa", max: () => false },
+  col: { lista: () => eqCol(), custo: v => Math.ceil(15 * Math.pow(G, v) * NV_CFG.fatorCusto),
+    efeito: v => `velocidade ${colSpeed(v)}, leva ${colCarry(v)}`, prox: v => `leva ${colCarry(v + 1)} por vez, mais rápido`, papel: "carrinheiro", max: () => false },
+  park: { lista: () => eqPark(), custo: v => Math.ceil(25 * Math.pow(1.45, v) * NV_CFG.fatorCusto),
+    efeito: v => `${Math.round((1 - parkTrain(v)) * 100)}% mais rápido`, prox: v => `${Math.round((1 - parkTrain(v + 1)) * 100)}% mais rápido`, papel: "atendente", max: v => parkTrain(v) <= 0.35 + 1e-9 },
+};
+const menosTreinado = lista => lista.reduce((m, p, k) => (m < 0 || p.v < lista[m].v ? k : m), -1);
+function treinarPessoa(tipo, ref, k, silencioso) {
+  const T = TIPOS_EQ[tipo], a = T.lista(ref), p = a[k]; if (!p || T.max(p.v)) return false;
+  const c = T.custo(p.v, ref); if (S.money < c || S.money < 0) { if (!silencioso) toast(`Falta dinheiro: treinar ${p.n} custa M ${fmt(c)}.`); return false; }
+  S.money -= c; p.v++; taskProgress("upgrades", 1);
+  if (!silencioso) { save(); lastSig = ""; renderSheet(); hud(); anunciar(`${p.n} (${T.papel}) treinou: nível ${p.v + 1}, ${T.efeito(p.v)}. Custou M ${fmt(c)}.`); }
+  window.__lastPurchase = { key: `treino:${tipo}:${ref || ""}:${k}`, cost: c, after: S.money };
+  return true;
+}
+// os botões de treino da equipe (teclas antigas, usadas também pelos robôs de teste) passam a treinar UMA pessoa:
+// quem tem menos treino. No painel de cada setor/caixa dá para escolher outra pessoa.
+{ const a0 = actions;
+  actions = function () {
+    const list = a0(), troca = (key, tipo, ref) => { const a = list.find(x => x.key === key); if (!a) return;
+      const T = TIPOS_EQ[tipo], eq = T.lista(ref), k = menosTreinado(eq);
+      if (k < 0) { a.title = "Treinar"; a.info = `Contrate um ${T.papel} primeiro`; a.locked = true; a.lockText = "Ninguém na equipe"; a.ok = false; return; }
+      const p = eq[k]; a.title = `Treinar ${p.n} (nv ${p.v + 1} → ${p.v + 2})`; a.info = `${T.prox(p.v)}. Quem tem menos treino; no painel você escolhe outra pessoa.`;
+      a.cost = T.custo(p.v, ref); a.maxed = T.max(p.v); a.locked = false;
+      a.run = () => { p.v++; }; a.ok = !a.locked && !a.maxed && S.money >= a.cost && S.money >= 0; };
+    SECTORS.forEach(d => troca(`train:${d.id}`, "rep", d.id));
+    troca("cashtrain", "caixa"); troca("traincol", "col"); if (CANCELA) troca("parktrain", "park");
+    return list;
+  };
+}
+// cartão "Equipe": uma linha por pessoa, com o nível e o botão de treino individual
+function cartaoEquipe(body, tipo, ref, rotulo) {
+  const T = TIPOS_EQ[tipo], c = el("div", "card equipe-ind", `<h3>${rotulo || "Equipe"}</h3>`);
+  const eq = T.lista(ref);
+  if (!eq.length) { c.appendChild(el("p", "note", `Ninguém contratado ainda.`)); body.appendChild(c); return; }
+  c.appendChild(el("p", "note", "Cada pessoa evolui separado: escolha quem treinar. Quem é contratado depois começa no nível 1."));
+  eq.forEach((p, k) => {
+    const lin = el("div", "req"), info = el("span", ""), b = el("button", "chipbtn");
+    lin.appendChild(info); lin.appendChild(b);
+    live(() => { const q = T.lista(ref)[k]; if (!q) return; const mx = T.max(q.v), cst = T.custo(q.v, ref);
+      info.innerHTML = `<b>${q.n}</b> · nível ${q.v + 1} · ${T.efeito(q.v)}`;
+      b.textContent = mx ? "Nível máximo" : `Treinar · M ${fmt(cst)}`; b.disabled = mx || S.money < cst;
+      b.setAttribute("aria-label", mx ? `${q.n}: nível máximo` : `Treinar ${q.n}, ${T.papel}, do nível ${q.v + 1} para ${q.v + 2}, por M ${fmt(cst)}`); });
+    b.onclick = () => treinarPessoa(tipo, ref, k);
+    c.appendChild(lin);
+  });
+  body.appendChild(c);
+}
+const faixaNv = lista => { if (!lista.length) return "—"; const vs = lista.map(p => p.v + 1), a = Math.min(...vs), b = Math.max(...vs); return a === b ? `nv ${a}` : `nv ${a}–${b}`; };
+const nvMin = (tipo, ref) => { const a = TIPOS_EQ[tipo].lista(ref); return a.length ? Math.min(...a.map(p => p.v)) : 0; };
+</script>
+<script>
+"use strict";
+// =====================================================================
 // Interface: one sheet at a time, opened from the bottom bar, the HUD or by tapping a building
 // =====================================================================
 const $ = id => document.getElementById(id);
@@ -7159,7 +7253,7 @@ function buildBuilding(body, acts) {
       body.appendChild(actsBox(acts, [`open:${d.id}`]));
       return;
     }
-    head(d.ic, shade(d.color, 1.8), d.name, () => `Prateleira nv ${st.shelfLvl + 1} · Qualidade nv ${st.priceLvl + 1} · Equipe nv ${st.staffLvl + 1}`);
+    head(d.ic, shade(d.color, 1.8), d.name, () => `Prateleira nv ${st.shelfLvl + 1} · Qualidade nv ${st.priceLvl + 1} · Equipe ${faixaNv(eqRep(d.id))}`);
     body.appendChild(statsBox([
       ["Na prateleira", () => `${st.shelf}/${shelfCap(st.shelfLvl)}`],
       ["No depósito", () => `${st.wh} un.`],
@@ -7180,20 +7274,22 @@ function buildBuilding(body, acts) {
     body.appendChild(el("div", "sec-title", "Melhorias"));
     body.appendChild(actsBox(acts, [`shelf:${d.id}`, `price:${d.id}`, `hire:${d.id}`, `train:${d.id}`]));
     const g = body.lastChild; g.insertBefore(hb, g.firstChild);
+    cartaoEquipe(body, "rep", d.id, "Repositores");
   } else if (sel.kind === "lane") {
     const l = sel.l, open = () => l < nCaixas();
-    head("🧾", "#d6ead9", `Caixa ${l + 1}`, () => open() ? `Aberto · operadores nv ${S.cashLvl + 1}` : "Fechado");
+    head("🧾", "#d6ead9", `Caixa ${l + 1}`, () => open() ? (l < S.cashiers ? `Aberto · ${eqCaixa()[l].n}, nível ${nvCaixa(l) + 1}` : "Aberto com volante") : "Fechado");
     body.appendChild(statsBox([
       ["Caixas abertos", () => `${nCaixas()} de ${nLanes()}${nCaixas() > S.cashiers ? ` (${nCaixas() - S.cashiers} com volantes)` : ""}`],
-      ["Tempo por item", () => `${cashTime(S.cashLvl).toFixed(2).replace(".", ",")} s`],
+      ["Tempo por item", () => `${cashTime(nvCaixa(l)).toFixed(2).replace(".", ",")} s`],
       ["Fila agora", () => open() ? `${laneQueue(l).length} cliente${laneQueue(l).length === 1 ? "" : "s"}` : "—"],
     ]));
     body.appendChild(el("p", "note", "Fila longa faz o cliente largar as compras e baixa a reputação."));
     body.appendChild(actsBox(acts, ["cashhire", "cashtrain"]));
+    cartaoEquipe(body, "caixa", null, "Operadores de caixa (um por caixa)");
     if (DIV) cartaoPrioridade(body, l);
   } else if (sel.kind === "station") {
     const gr = S.gear;
-    head("🧺", "#fde2dc", "Cestas e carrinhos", () => `Carrinheiros nv ${gr.colLvl + 1}`);
+    head("🧺", "#fde2dc", "Cestas e carrinhos", () => `Carrinheiros ${faixaNv(eqCol())}`);
     body.appendChild(statsBox([
       [ENT2 ? "Entradas (estac. · avenida)" : "Na entrada", () => ENT2 ? `🧺${station.b} 🛒${station.c} · 🧺${station2.b} 🛒${station2.c}` : `🧺 ${station.b} · 🛒 ${station.c}`],
       ["Total da loja", () => `🧺 ${gr.baskets} · 🛒 ${gr.carts}`],
@@ -7202,6 +7298,7 @@ function buildBuilding(body, acts) {
     ]));
     body.appendChild(el("p", "note", "Sem cesta o cliente vai embora. Toque nas pilhas ao lado dos caixas para devolver na hora."));
     body.appendChild(actsBox(acts, ["buybasket", "buycart", "hirecol", "traincol"]));
+    cartaoEquipe(body, "col", null, "Carrinheiros");
   } else if (sel.kind === "wh") {
     head("📦", "#e8dcc4", "Depósito", () => `Nível ${S.whLvl + 1}`);
     body.appendChild(statsBox([
@@ -7272,6 +7369,7 @@ function buildBuilding(body, acts) {
       : `Sem atendente, as cancelas usam máquinas automáticas: mais lentas (${fmtS(PK.machineIn)} na entrada, ${fmtS(PK.machineOut)} na saída), mas nenhum carro fica preso.`; });
     body.appendChild(how);
     body.appendChild(actsBox(acts, ["parkhire", "parktrain"]));
+    cartaoEquipe(body, "park", null, "Atendentes (1º saída, 2º entrada, 3º e 4º ajudam)");
     const fire = el("button", "plain", `<span>Dispensar um atendente</span>`);
     fire.onclick = () => { if (!pk.staff) return; if (fire.dataset.armed) { pk.staff--; save(); lastSig = ""; renderSheet(); toast("Atendente dispensado. O salário deixa de ser cobrado."); }
       else { fire.dataset.armed = 1; fire.firstChild.textContent = "Toque de novo para dispensar"; setTimeout(() => { delete fire.dataset.armed; fire.firstChild.textContent = "Dispensar um atendente"; }, 2500); } };
@@ -7351,7 +7449,7 @@ function buildUpgrade(body, acts) {
       r.onclick = () => openSheet("expand"); body.appendChild(r);
     }
   } else {
-    body.appendChild(storeRow("🧾", "#d6ead9", "Caixas", () => `${nCaixas()} de ${nLanes()} abertos · ${cashTime(S.cashLvl).toFixed(2).replace(".", ",")} s por item`, { kind: "lane", l: 0 }, a => a.kind === "cashhire" || a.kind === "cashtrain"));
+    body.appendChild(storeRow("🧾", "#d6ead9", "Caixas", () => `${nCaixas()} de ${nLanes()} abertos · operadores ${faixaNv(eqCaixa())}`, { kind: "lane", l: 0 }, a => a.kind === "cashhire" || a.kind === "cashtrain"));
     body.appendChild(storeRow("🧺", "#fde2dc", "Cestas e carrinhos", () => `🧺 ${S.gear.baskets} · 🛒 ${S.gear.carts} · ${S.gear.collectors} carrinheiro${S.gear.collectors > 1 ? "s" : ""}`, { kind: "station" }, a => a.kind === "gear"));
     body.appendChild(storeRow("📦", "#e8dcc4", "Depósito", () => `${whUsed()}/${whCap(S.whLvl)} caixas · nível ${S.whLvl + 1}`, { kind: "wh" }, a => a.kind === "storage"));
     body.appendChild(storeRow("🅿️", "#dfe8f4", "Estacionamento", () => `${occupied()}/${STALLS.length} vagas · ${S.park.staff} atendente${S.park.staff === 1 ? "" : "s"} · ${S.park.price ? "M " + fmt(S.park.price) : "grátis"}`, { kind: "parking" }, a => a.kind.startsWith("park")));
@@ -7927,7 +8025,7 @@ function resumoOperacao(t, o) {
 //   · Painel de trapaças (modo desenvolvedor): 7 toques na versão nas Configurações + código.
 //     Todo uso fica marcado no save (S.trapacas / CARREIRA.trapacas).
 // =====================================================================
-const APP_VERSAO = "1.4";
+const APP_VERSAO = "1.5";
 const SITE_JOGO = "https://danielcamposdasilva-tech.github.io/mercadinho/";
 const WHATS_SUPORTE = "5521988612660";
 const DEV_HASH = 1898547767;                  // código do modo desenvolvedor (só o hash fica no jogo)
