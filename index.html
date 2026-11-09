@@ -334,6 +334,7 @@
   /* ---------- acessibilidade ---------- */
   .plain.toggle { justify-content: flex-start; }
   .plain.toggle[aria-pressed="true"] { background: #d6ead9; box-shadow: inset 0 0 0 2px var(--green-2); }
+  .plain.toggle.bloq { opacity: .7; border-style: dashed; }
   details.regras { font: 700 13px var(--body); color: var(--ink); }
   details.regras summary { cursor: pointer; padding: 6px 2px; font-weight: 800; color: var(--green); }
   details.regras ul { margin: 4px 0 6px; padding-left: 18px; line-height: 1.4; }
@@ -1737,8 +1738,9 @@ function passBy(c, lostWhy) {
 // 1.4: só diz "lotado" quando não há vaga livre; com vagas sobrando, o gargalo é a fila da cancela
 const vagaLivre = () => STALLS.some(s => !s.car && !s.res);
 function avisoDesistiu(c) {
-  const filaCancela = vagaLivre() && S.park.staff < PK.maxStaff;
-  if (filaCancela) { float(c.x + 10, c.y - 14, "Fila 😕", "#c9513a"); toastOnce("parkfila", `Fila na cancela do estacionamento: ainda há vagas livres, mas ${S.park.staff ? "a cancela não dá conta" : "não há atendente"}. Contrate ou treine atendentes.`); }
+  // 1.7: com vaga livre o problema é sempre a fila da cancela, mesmo com a equipe completa (relato VENDDU)
+  const filaCancela = vagaLivre();
+  if (filaCancela) { float(c.x + 10, c.y - 14, "Fila 😕", "#c9513a"); toastOnce("parkfila", `Fila na cancela do estacionamento: ainda há vagas livres, mas ${S.park.staff ? "a cancela não dá conta" : "não há atendente"}. ${S.park.staff >= PK.maxStaff ? (typeof eqPark === "function" && eqPark().every(p => TIPOS_EQ.park.max(p.v)) ? "Equipe completa e no nível máximo: a cancela está no limite, as vagas sobram no pico." : "A equipe está completa: treine os atendentes para atenderem mais rápido.") : "Contrate ou treine atendentes."}`); }
   else { float(c.x + 10, c.y - 14, "Lotado 😕", "#c9513a"); toastOnce("parkfull", S.park.staff >= PK.maxStaff || !CANCELA ? "Estacionamento lotado: todas as vagas ocupadas ou reservadas (em amarelo) para carros entrando. Amplie o estacionamento." : "Estacionamento lotado! Compre mais vagas ou contrate atendentes."); }
 }
 function qPos(i) { const y = pkY(); return i === 0 ? { x: PK.EX, y: y.gateStop } : { x: PK.EX - 30 * i, y: y.laneIn }; }
@@ -2890,7 +2892,7 @@ function desenharPessoaEquipe(v) {
 
 // ---------- painel ----------
 const pctTxt = v => `${Math.round(v * 100)}%`;
-function cartaoEquipe() {
+function cartaoGestaoEquipe() {      // 1.7: nome próprio (11b tem cartaoEquipe por pessoa; o mesmo nome derrubava o painel)
   const c = el("div", "card");
   c.innerHTML = `<h3>👥 Equipe e responsáveis</h3><p class="note" id="eqRes"></p>`;
   live(() => { const e = eq(), q = c.querySelector("#eqRes"); if (!q) return;
@@ -2990,7 +2992,7 @@ FASE_CFG.restinga = {
   },
   fimDoDia(L) { fimDoDiaEquipe(L); },
   tick(dt) { tickEquipe(dt); },
-  cartoes() { return [cartaoEquipe()]; },
+  cartoes() { return [cartaoGestaoEquipe()]; },
   missao() {
     const e = eq();
     if (!e.encarregado && !e.fiscal && !nLideres() && !e.volantes) return { title: "Organizar a equipe", sub: "Nomeie responsáveis e contrate volantes (aba Carreira)", p: 0, ring: "👥", go: () => openSheet("equipe") };
@@ -3365,7 +3367,7 @@ FASE_CFG.pitanga = {
   },
   fimDoDia(L) { fimDoDiaEquipe(L); fimDoDiaEntregas(L); },
   tick(dt) { tickEquipe(dt); tickEntregas(dt); },
-  cartoes() { return [cartaoEntregas(), cartaoEquipe()]; },
+  cartoes() { return [cartaoEntregas(), cartaoGestaoEquipe()]; },
   missao() {
     const e = ent(), novos = e.pedidos.filter(o => o.estado === "novo").length;
     if (novos && !e.auto) return { title: `${novos} pedido(s) de entrega esperando`, sub: "Aceite, recuse ou ligue o aceite automático", p: 0, ring: "🛵", go: () => openSheet("entregas") };
@@ -3534,8 +3536,15 @@ function diaLocacao(L, cfg, extraReceita) {
 }
 // enquanto o app estava fechado: os contratos andam, sem dinheiro novo (já está no lucro médio do gerente)
 function locacaoAoVoltar(L, cfg, days) {
-  let saiu = 0;
-  ocupadas(L).forEach(u => { u.ocup.resta -= days; u.ocup.vendas = 0; if (u.ocup.resta <= -1) { u.ocup = null; saiu++; } });
+  // 1.7: o gerente renova sozinho quem paga em dia (aluguel +6% uma vez); só sai quem está com 2+ atrasos.
+  // Antes todos os contratos venciam enquanto o app estava fechado e o shopping voltava vazio (relato DW1RFR).
+  let saiu = 0, renovou = 0;
+  ocupadas(L).forEach(u => { const o = u.ocup; o.resta -= days; o.vendas = 0;
+    if (o.resta > -1) return;
+    if ((o.atrasos || 0) >= 2) { u.ocup = null; saiu++; return; }
+    const dur = Math.max(1, o.diasContrato || 12); while (o.resta <= 0) o.resta += dur;
+    o.aluguel = Math.round(o.aluguel * 1.06); renovou++; });
+  L.voltaFora = { saiu, renovou };
   L.propostas = L.propostas.filter(p => !p.renovacao || L.unidades.some(u => u.id === p.unidade && u.ocup));
   ocupadas(L).forEach(u => { if (u.ocup.resta <= 0 && !L.propostas.some(p => p.renovacao && p.unidade === u.id)) gerarProposta(L, cfg, u); });
   L.propostas = L.propostas.filter(p => p.renovacao);                  // propostas comuns já expiraram
@@ -4139,7 +4148,8 @@ if (AT_ATIVO) {
     const saiu = locacaoAoVoltar(galeria(), GAL_CFG, days);
     const L = [];
     if (desc) L.push(["Paletes descarregados enquanto você esteve fora", String(desc)]);
-    if (saiu) L.push(["Contratos da galeria encerrados", `${saiu} sala(s) vaga(s)`]);
+    const ren0 = galeria().voltaFora ? galeria().voltaFora.renovou : 0; if (ren0) L.push(["Contratos da galeria renovados pelo gerente (aluguel +6%)", `${ren0} sala(s)`]);
+    if (saiu) L.push(["Salas que ficaram vagas (aluguel atrasado)", `${saiu} sala(s)`]);
     const ren = galeria().propostas.filter(p => p.renovacao).length; if (ren) L.push(["Renovações esperando resposta", String(ren)]);
     return L;
   };
@@ -4679,7 +4689,8 @@ function shoppingAoVoltar(days) {
   Object.keys(s.campanhas).forEach(d => { if (+d < S.day) delete s.campanhas[d]; });
   s.relatorios.length = Math.min(s.relatorios.length, 8);
   s.panes = []; s.sujeira = 0; s.hoje = novoHojeSh();
-  if (saiu) L.push(["Contratos encerrados", `${saiu} loja(s) vaga(s)`]);
+  const ren0 = lojasSh().voltaFora ? lojasSh().voltaFora.renovou : 0; if (ren0) L.push(["Contratos renovados pelo gerente (aluguel +6%)", `${ren0} loja(s)`]);
+  if (saiu) L.push(["Lojas que saíram (estavam com aluguel atrasado)", `${saiu} loja(s) vaga(s)`]);
   if (evs) L.push(["Eventos realizados enquanto você esteve fora", `${evs} (receita M ${fmt(rec)}, sem bônus de público)`]);
   const ren = lojasSh().propostas.filter(p => p.renovacao).length; if (ren) L.push(["Renovações esperando resposta", String(ren)]);
   return L;
@@ -5446,7 +5457,14 @@ function buildReuniao(body) {
   body.appendChild(el("div", "sec-title", "Delegar"));
   Object.keys(AREA_NOME).forEach(a => { const lib = r.manual[a] >= R14.deleg && (r.decididas || 0) >= R14_META;
     const b = el("button", "plain toggle", `<span>${POL_NOME[a]}: <b>${lib ? (r.pol[a] ? "sim" : "não") : (r.decididas || 0) < R14_META ? `libera depois de ${R14_META} reuniões decididas por você (${r.decididas || 0})` : `libera depois de ${R14.deleg} decisões suas fora do padrão (${r.manual[a]})`}</b></span>`);
-    b.setAttribute("aria-pressed", String(!!r.pol[a])); if (lib) b.onclick = () => alternarPolitica(a); else b.disabled = true; body.appendChild(b); });
+    b.setAttribute("aria-pressed", String(!!r.pol[a]));
+    // 1.7: bloqueado continua tocável e explica o que falta (antes ficava desativado e parecia defeito, relato JCYIG9)
+    if (lib) b.onclick = () => alternarPolitica(a);
+    else { b.classList.add("bloq"); b.setAttribute("aria-disabled", "true");
+      b.onclick = () => { const faltaR = Math.max(0, R14_META - (r.decididas || 0)), faltaM = Math.max(0, R14.deleg - (r.manual[a] || 0));
+        toast(faltaR ? `Para delegar, decida você mesmo mais ${faltaR} reunião(ões) da semana (escolha cada decisão em aberto, sem deixar o padrão).`
+          : `Para delegar ${AREA_NOME[a].toLowerCase()}, faça mais ${faltaM} escolha(s) fora do padrão nessa área nas próximas reuniões.`); }; }
+    body.appendChild(b); });
   if (r.hist.length) { body.appendChild(el("div", "sec-title", "Efeito das decisões"));
     r.hist.slice(0, 2).forEach(h => body.appendChild(el("div", "card", `<h3>Semana ${h.semana}</h3>${h.linhas.map(l => `<p class="note">${l}</p>`).join("") || '<p class="note">Sem decisões.</p>'}`))); }
 }
@@ -7667,7 +7685,7 @@ function buildTasks(body, acts) {
     const ty = TASK_TYPES.find(x => x.id === t.type), row = el("div", "task", `<div class="tt"><div>${ty.label(t.target, t.sec)}</div><div class="s" style="font:700 11px var(--body);color:var(--muted)"></div></div>`);
     const s = row.querySelector(".s"); live(() => { s.textContent = `${fmt(t.progress)} de ${fmt(t.target)}`; });
     row.firstChild.appendChild(meter(() => t.progress / t.target));
-    row.appendChild(actBtn(acts.find(a => a.key === `task:${i}`))); c.appendChild(row);
+    const at = acts.find(a => a.key === `task:${i}`); if (at) row.appendChild(actBtn(at)); c.appendChild(row);
   });
   c.appendChild(actsBox(acts, ["chest"]));
   body.appendChild(c);
@@ -7724,6 +7742,7 @@ function sheetSig() {
 }
 function renderSheet() {
   if (!ui.sheet) return;
+  if (ui.sheet === "tasks") ensureTasks();      // 1.7: sorteia/renova as tarefas ANTES de montar as ações (senão faltava o botão e a tela quebrava)
   const acts = actions(), sig = sheetSig();
   if (sig !== lastSig) {
     lastSig = sig; panelEls = {}; liveFns = [];
@@ -8211,7 +8230,7 @@ function resumoOperacao(t, o) {
 //   · Painel de trapaças (modo desenvolvedor): 7 toques na versão nas Configurações + código.
 //     Todo uso fica marcado no save (S.trapacas / CARREIRA.trapacas).
 // =====================================================================
-const APP_VERSAO = "1.6";
+const APP_VERSAO = "1.7";
 const SITE_JOGO = "https://danielcamposdasilva-tech.github.io/mercadinho/";
 const WHATS_SUPORTE = "5521988612660";
 const DEV_HASH = 1898547767;                  // código do modo desenvolvedor (só o hash fica no jogo)
