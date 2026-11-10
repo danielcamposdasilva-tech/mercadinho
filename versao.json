@@ -1,6 +1,7 @@
 {
-  "versao": "1.7",
-  "novidades": "Correções vindas do diagnóstico: o painel da Carreira voltou a abrir nos capítulos 4 e 5, a tela de Tarefas não trava mais, o gerente renova as lojas que pagam em dia enquanto você está fora, o aviso de estacionamento só diz lotado quando falta vaga e o botão de delegar explica o que falta para liberar.",
+  "versao": "1.8",
+  "novidades": "Capítulos 9 a 11 da carreira (Farol da Ponta, CD Inoã e Armazém da Serra), música de fundo, primeiro dia guiado com carrinheiro grátis, cancela com atendentes em mais capítulos, entregas nas lojas, ponto de apoio aos entregadores nos shoppings, obras e pedidos à prefeitura, Natal, Páscoa e Dia das Mães com decoração, virada do ano na praia, pista de kart no Grande Shopping, presentes do suporte e correções (painel que rolava sozinho e lojas que saíam com o app fechado).",
   "pagina": "https://danielcamposdasilva-tech.github.io/mercadinho/baixar/",
-  "diag": "https://script.google.com/macros/s/AKfycbyxlY4s_zwKAT7VapTz29wzZ2-OBl7kyoOpUuA1L3CgajFJ6LULtnwbPCi9SQT2KNPjSA/exec"
+  "diag": "https://script.google.com/macros/s/AKfycbyxlY4s_zwKAT7VapTz29wzZ2-OBl7kyoOpUuA1L3CgajFJ6LULtnwbPCi9SQT2KNPjSA/exec",
+  "presentes": []
 }
