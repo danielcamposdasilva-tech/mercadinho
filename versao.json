@@ -1,6 +1,6 @@
 {
-  "versao": "1.8",
-  "novidades": "Capítulos 9 a 11 da carreira (Farol da Ponta, CD Inoã e Armazém da Serra), música de fundo, primeiro dia guiado com carrinheiro grátis, cancela com atendentes em mais capítulos, entregas nas lojas, ponto de apoio aos entregadores nos shoppings, obras e pedidos à prefeitura, Natal, Páscoa e Dia das Mães com decoração, virada do ano na praia, pista de kart no Grande Shopping, presentes do suporte e correções (painel que rolava sozinho e lojas que saíam com o app fechado).",
+  "versao": "1.8.1",
+  "novidades": "Correção: o jogo não congela mais se um desenho falhar; música no iPhone sem erro; diagnóstico mais detalhado. Quem está começando vai direto para a Carreira; o modo Livre aparece depois do capítulo 1.",
   "pagina": "https://danielcamposdasilva-tech.github.io/mercadinho/baixar/",
   "diag": "https://script.google.com/macros/s/AKfycbyxlY4s_zwKAT7VapTz29wzZ2-OBl7kyoOpUuA1L3CgajFJ6LULtnwbPCi9SQT2KNPjSA/exec",
   "presentes": []

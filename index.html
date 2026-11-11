@@ -295,6 +295,11 @@
   .modo-tx .salvo { color: var(--green-2); font-weight: 800; }
   .modo-bt { grid-column: 1 / -1; display: flex; gap: 8px; align-items: stretch; }
   .modo-bt .btn { flex: 1; padding: 12px; }
+  /* 1.8.1: Modo Livre como opção secundária, menor, abaixo da Carreira */
+  .modo.modo-sec { padding: 10px 14px; box-shadow: 0 6px 18px rgba(0,0,0,.18); grid-template-columns: 36px 1fr; }
+  .modo-sec .modo-ic { font-size: 22px; width: 36px; height: 36px; }
+  .modo-sec .modo-tx h3 { font-size: 17px; }
+  .modo-sec .modo-bt .plain:not(.mini) { flex: 1; justify-content: center; }
   .plain.mini { flex: none; padding: 10px 12px; font-size: 13px; justify-content: center; }
   .menu-nota { margin: 0; text-align: center; color: #d8e3d4; font-size: 12px; }
   .danger-btn { background: #c9513a; color: #fff; box-shadow: 0 3px 0 #8e3324; }
@@ -459,9 +464,10 @@ window.__boot = { falhas: [], ok: false };
 addEventListener("error", function (e) { var t = e.target; if (t && t.tagName === "SCRIPT" && t.src) window.__boot.falhas.push(t.src.split("/").pop()); }, true);
 // 1.3: últimos erros de script, para o "Relatar problema" (só mensagem e local, nada digitado pelo jogador)
 window.__erros = [];
-function __regErro(m) { try { window.__erros.push({ t: Date.now(), m: String(m).slice(0, 180) }); if (window.__erros.length > 8) window.__erros.shift(); } catch (x) {} }
-addEventListener("error", function (e) { if (e.message) __regErro(e.message + " @ " + String(e.filename || "").split("/").pop() + ":" + e.lineno); });
-addEventListener("unhandledrejection", function (e) { __regErro("promessa: " + (e.reason && e.reason.message || e.reason)); });
+function __regErro(m, p) { try { window.__erros.push({ t: Date.now(), m: String(m).slice(0, 180), p: p ? String(p).slice(0, 1500) : "" }); if (window.__erros.length > 8) window.__erros.shift(); } catch (x) {} }
+// 1.8.1: guarda também a pilha (o diagnóstico resume para 4 linhas e só nomes de arquivo)
+addEventListener("error", function (e) { if (e.message) __regErro(e.message + " @ " + String(e.filename || "").split("/").pop() + ":" + e.lineno, e.error && e.error.stack); });
+addEventListener("unhandledrejection", function (e) { __regErro("promessa: " + (e.reason && e.reason.message || e.reason), e.reason && e.reason.stack); });
 addEventListener("load", function () {
   if (window.__boot.ok) return;
   var n = 0; try { n = +(sessionStorage.getItem("mercadinho-recarga") || 0); } catch (e) {}
@@ -1270,15 +1276,30 @@ const DIV = !window.__semDiversidade;
     },
     salvarPrefs() { try { localStorage.setItem(CHAVE, JSON.stringify({ vol: this.vol, mudo: this.silencio })); } catch (e) { } },
     iniciar() {
-      if (this.c) { if (this.tocando && this.c.state !== 'running') this.c.resume(); return true; }
+      if (this.c) { if (this.tocando && this.c.state !== 'running') this.retomar(); return true; }
       const C = global.AudioContext || global.webkitAudioContext; if (!C) return false;
       this.c = new C({ latencyHint: 'playback' }); this.nos = montar(this.c); this.aplicarVolume(0);
       this.timer = setInterval(() => this.ciclo(), 50);
       document.addEventListener('visibilitychange', () => {
         if (!this.c) return;
-        if (document.hidden) this.c.suspend(); else if (this.tocando) this.c.resume();
+        if (document.hidden) this.suspender(); else if (this.tocando) this.retomar();
       });
       return true;
+    },
+    // 1.8.1: resume()/suspend() devolvem promessa que pode ser rejeitada (iPhone na tela inicial: "Failed to start the
+    // audio device"). Nunca deixa a rejeição escapar; se não conseguiu, tenta de novo no próximo toque do jogador.
+    retomar() {
+      if (!this.c) return;
+      try { const p = this.c.resume(); if (p && p.catch) p.catch(() => this.tentarNoToque()); } catch (e) { this.tentarNoToque(); }
+    },
+    suspender() {
+      if (!this.c) return;
+      try { const p = this.c.suspend(); if (p && p.catch) p.catch(() => {}); } catch (e) { }
+    },
+    tentarNoToque() {
+      if (this.esperandoToque || !global.addEventListener) return; this.esperandoToque = true;
+      const f = () => { global.removeEventListener('pointerdown', f, true); global.removeEventListener('keydown', f, true); this.esperandoToque = false; if (this.tocando) this.retomar(); };
+      global.addEventListener('pointerdown', f, true); global.addEventListener('keydown', f, true);
     },
     ciclo() {
       if (!this.c || this.c.state !== 'running') return;
@@ -1289,7 +1310,7 @@ const DIV = !window.__semDiversidade;
     tocar(id, fadeSeg) {
       if (!this.iniciar()) return;
       const F = FAIXAS.find(f => f.id === id) || FAIXAS[0], s = fadeSeg == null ? 1.5 : fadeSeg;
-      this.c.resume(); this.tocando = true;
+      this.retomar(); this.tocando = true;
       if (this.atual && this.atual.F.id === F.id && !this.atual.fimEm) return;
       if (this.atual) { this.atual.fade(0, s); this.atual.fimEm = this.c.currentTime + s + 0.1; }
       const p = new Tocador(this.c, this.nos.mix, F, this);
@@ -8236,7 +8257,15 @@ if (window.ResizeObserver) new ResizeObserver(() => { if (cv.clientWidth !== VW 
 function rrPath(x, y, w, h, r) { ctx.beginPath(); if (ctx.roundRect) ctx.roundRect(x, y, Math.max(0, w), Math.max(0, h), r); else ctx.rect(x, y, w, h); }
 function rr(x, y, w, h, r, fill) { rrPath(x, y, w, h, r); ctx.fillStyle = fill; ctx.fill(); }
 function rrs(x, y, w, h, r, fill, stroke, lw = 1) { rrPath(x, y, w, h, r); ctx.fillStyle = fill; ctx.fill(); ctx.strokeStyle = stroke; ctx.lineWidth = lw; ctx.stroke(); }
-function grad(y0, y1, c0, c1) { const g = ctx.createLinearGradient(0, y0, 0, y1); g.addColorStop(0, c0); g.addColorStop(1, c1); return g; }
+// 1.8.1: com y0/y1 não finitos (NaN, Infinity) o createLinearGradient lança e o quadro inteiro caía; agora devolve a cor
+// sólida e registra uma vez no diagnóstico, com a pilha, para achar qual objeto está com coordenada NaN.
+let gradNaoFinitoAvisado = false;
+function grad(y0, y1, c0, c1) {
+  if (!Number.isFinite(y0) || !Number.isFinite(y1)) {
+    if (!gradNaoFinitoAvisado) { gradNaoFinitoAvisado = true; try { if (typeof regErro === "function") regErro("grad não finito", `y0=${y0} y1=${y1}`, new Error().stack); } catch (e) {} }
+    return c1;
+  }
+  const g = ctx.createLinearGradient(0, y0, 0, y1); g.addColorStop(0, c0); g.addColorStop(1, c1); return g; }
 function text(t, x, y, size, color, align = "center", weight = 800, font = "Nunito", outline) {
   ctx.font = `${weight} ${size}px "${font}", system-ui, sans-serif`; ctx.textAlign = align;
   if (outline) { ctx.lineJoin = "round"; ctx.lineWidth = 3; ctx.strokeStyle = outline; ctx.strokeText(t, x, y); }
@@ -10506,36 +10535,47 @@ function resumoCarreira() {
   return `Capítulo ${f.capitulo}: ${f.titulo}${dia}${outra}`;
 }
 function confirmarApagar(nome, outro, chave, modo) {
-  showModal(`<h2>Apagar ${nome}?</h2><p>A partida salva de <b>${nome}</b> será apagada deste aparelho. <b>${outro}</b> não é afetado.</p>
+  showModal(`<h2>Apagar ${nome}?</h2><p>A partida salva de <b>${nome}</b> será apagada deste aparelho.${outro ? ` <b>${outro}</b> não é afetado.` : ""}</p>
     <button class="btn danger-btn" id="sim">Apagar e começar de novo</button>
     <button class="plain" id="nao" style="margin-top:8px;width:100%;justify-content:center"><span>Cancelar</span></button>`);
   document.getElementById("sim").onclick = () => { try { localStorage.removeItem(chave); } catch (e) {} entrarModo(modo); };
   document.getElementById("nao").onclick = () => { hideModal(); };
 }
+// 1.8.1: pedido do Daniel — o modo Livre confundia quem estava começando. Ele só aparece no menu, como opção
+// secundária abaixo da Carreira, se já existir partida do Livre neste aparelho ou se o capítulo 1 da carreira
+// estiver concluído. Nada é apagado, e abrir o Livre pela sessão (mercadinho-sessao) continua funcionando.
+// Para voltar ao menu antigo, basta esta função devolver sempre true.
+function LIVRE_VISIVEL() {
+  try {
+    const s = localStorage.getItem(CHAVE_LIVRE); if (s && s !== "null" && s !== "{}") return true;
+    const c = migrarCarreira(lerJSON(localStorage, CHAVE_CARREIRA), false);
+    return !!(c && ((c.fases && c.fases.bairro && c.fases.bairro.concluida) || (c.fase && c.fase !== "bairro")));
+  } catch (e) { return false; }
+}
 function mostrarMenu() {
-  const rl = resumoLivre(), rc = resumoCarreira();
-  const m = document.createElement("div"); m.id = "menu"; m.setAttribute("role", "dialog"); m.setAttribute("aria-label", "Escolha de modo");
+  const livre = LIVRE_VISIVEL(), rl = livre ? resumoLivre() : null, rc = resumoCarreira();
+  const m = document.createElement("div"); m.id = "menu"; m.setAttribute("role", "dialog"); m.setAttribute("aria-label", livre ? "Escolha de modo" : "Menu inicial");
   m.innerHTML = `<div class="menu-box">
     <div class="menu-logo"><span>MERCADINHO</span><small>DA ESQUINA</small></div>
-    <p class="menu-sub">Escolha como quer jogar. Cada modo tem o seu próprio progresso.</p>
-    <div class="modo">
-      <div class="modo-ic">🏪</div>
-      <div class="modo-tx"><h3>Meu Mercado</h3><p>Modo livre: cresça o seu mercado no seu ritmo, de mercadinho a rede.</p>${rl ? `<p class="salvo">Salvo: ${rl}</p>` : ""}</div>
-      <div class="modo-bt"><button class="btn" id="mLivre">${rl ? "Continuar" : "Começar"}</button>${rl ? `<button class="plain mini" id="mLivreNovo"><span>Novo jogo</span></button>` : ""}</div>
-    </div>
+    <p class="menu-sub">${livre ? "Escolha como quer jogar. Cada modo tem o seu próprio progresso." : "Comece num mercadinho de bairro em Maricá e chegue a uma rede de supermercados."}</p>
     <div class="modo">
       <div class="modo-ic">🗺️</div>
       <div class="modo-tx"><h3>Carreira em Maricá</h3><p>Campanha por fases: comece num mercado de bairro e assuma empreendimentos maiores.</p>${rc ? `<p class="salvo">Salvo: ${rc}</p>` : ""}</div>
-      <div class="modo-bt"><button class="btn" id="mCarr">${rc ? "Continuar" : "Começar carreira"}</button>${rc ? `<button class="plain mini" id="mCarrNovo"><span>Nova carreira</span></button>` : ""}</div>
+      <div class="modo-bt"><button class="btn" id="mCarr">${rc ? "Continuar" : (livre ? "Começar carreira" : "Jogar")}</button>${rc ? `<button class="plain mini" id="mCarrNovo"><span>Nova carreira</span></button>` : ""}</div>
     </div>
+    ${livre ? `<div class="modo modo-sec">
+      <div class="modo-ic">🏪</div>
+      <div class="modo-tx"><h3>Modo Livre</h3><p>Uma loja sem história, para jogar do seu jeito.</p>${rl ? `<p class="salvo">Salvo: ${rl}</p>` : ""}</div>
+      <div class="modo-bt"><button class="plain" id="mLivre"><span>${rl ? "Continuar" : "Começar"}</span></button>${rl ? `<button class="plain mini" id="mLivreNovo"><span>Novo jogo</span></button>` : ""}</div>
+    </div>` : ""}
     <p class="menu-nota">Cenários inspirados em Maricá; estabelecimentos e nomes são fictícios.</p>
   </div>`;
   document.body.appendChild(m);
-  m.querySelector("#mLivre").onclick = () => entrarModo("livre");
   m.querySelector("#mCarr").onclick = () => entrarModo("carreira");
-  const ln = m.querySelector("#mLivreNovo"); if (ln) ln.onclick = () => confirmarApagar("o Meu Mercado", "A carreira", CHAVE_LIVRE, "livre");
-  const cn = m.querySelector("#mCarrNovo"); if (cn) cn.onclick = () => confirmarApagar("a carreira", "O Meu Mercado", CHAVE_CARREIRA, "carreira");
-  setTimeout(() => m.querySelector("#mLivre").focus(), 50);
+  const lb = m.querySelector("#mLivre"); if (lb) lb.onclick = () => entrarModo("livre");
+  const ln = m.querySelector("#mLivreNovo"); if (ln) ln.onclick = () => confirmarApagar("o Modo Livre", "A carreira", CHAVE_LIVRE, "livre");
+  const cn = m.querySelector("#mCarrNovo"); if (cn) cn.onclick = () => confirmarApagar("a carreira", livre ? "O Modo Livre" : "", CHAVE_CARREIRA, "carreira");
+  setTimeout(() => m.querySelector("#mCarr").focus(), 50);
 }
 </script>
 <script>
@@ -10893,7 +10933,7 @@ function resumoOperacao(t, o) {
 //   · Painel de trapaças (modo desenvolvedor): 7 toques na versão nas Configurações + código.
 //     Todo uso fica marcado no save (S.trapacas / CARREIRA.trapacas).
 // =====================================================================
-const APP_VERSAO = "1.8";
+const APP_VERSAO = "1.8.1";
 const SITE_JOGO = "https://danielcamposdasilva-tech.github.io/mercadinho/";
 const WHATS_SUPORTE = "5521988612660";
 const DEV_HASH = 1898547767;                  // código do modo desenvolvedor (só o hash fica no jogo)
@@ -10911,10 +10951,16 @@ function regAcontecimento(txt) { if (!txt) return;
   const linha = `d${typeof S !== "undefined" && S ? S.day : "?"} ${String(txt).replace(/<[^>]+>/g, "").slice(0, 90)}`, ult = ACONTECIMENTOS[ACONTECIMENTOS.length - 1];
   if (ult && ult.replace(/ \(×\d+\)$/, "") === linha) { const n = +((/ \(×(\d+)\)$/.exec(ult) || [])[1] || 1) + 1; ACONTECIMENTOS[ACONTECIMENTOS.length - 1] = `${linha} (×${n})`; return; }     // repetido em seguida: conta, não ocupa outra linha
   ACONTECIMENTOS.push(linha); if (ACONTECIMENTOS.length > 12) ACONTECIMENTOS.shift(); }
-// toast é declarado em 13-hud-loop (carregado depois): o embrulho é feito quando todos os scripts já rodaram
-setTimeout(() => { if (typeof toast !== "function" || typeof banner !== "function") return; const t0 = toast, b0 = banner;
+// toast é declarado em 13-hud-loop (carregado depois). 1.8: o embrulho é chamado por 13-hud-loop logo depois de declarar o toast.
+// Antes era só um setTimeout(0), que podia rodar antes do 13 carregar (arquivos lidos devagar) e desistia em silêncio:
+// aí os avisos não entravam nos acontecimentos do "Relatar problema". O setTimeout fica só como reserva, com novas tentativas.
+let avisosEmbrulhados = false;
+function embrulharAvisos() { if (avisosEmbrulhados) return true;
+  if (typeof toast !== "function" || typeof banner !== "function") return false; const t0 = toast, b0 = banner;
   toast = msg => { regAcontecimento(msg); return t0(msg); };
-  banner = (txt, color) => { regAcontecimento(txt); return b0(txt, color); }; }, 0);
+  banner = (txt, color) => { regAcontecimento(txt); return b0(txt, color); };
+  avisosEmbrulhados = true; return true; }
+(function tentarEmbrulhar(n) { if (!embrulharAvisos() && n < 50) setTimeout(() => tentarEmbrulhar(n + 1), 100); })(0);
 
 // ---------- diagnóstico revisável ----------
 function aparelho() {
@@ -11238,6 +11284,19 @@ function regDiag(tipo, dados, prio = 0) {
   while (d.fila.length > DIAG_MAX) { const k = d.fila.findIndex(e => e.pr === 0); d.fila.splice(k >= 0 ? k : 0, 1); }   // descarta primeiro os de menor prioridade
   gravarDg();
 }
+// 1.8.1: pilha resumida (até 4 linhas com arquivo:linha, só o nome do arquivo, no máximo 400 caracteres)
+function pilhaCurta(st) {
+  if (!st) return "";
+  return String(st).split("\n").filter(l => /:\d+/.test(l)).slice(0, 4)
+    .map(l => l.trim().replace(/^at /, "").replace(/(?:https?|file|capacitor|blob):\/\/[^\s()]*\//g, "")).join(" | ").slice(0, 400);
+}
+// 1.8.1: erros de JavaScript, cada mensagem no máximo 1 vez por sessão (até 10 diferentes), com a pilha
+const errosVistos = new Set();
+function regErro(msg, onde, pilha) {
+  msg = String(msg || "").slice(0, 200); if (!msg || errosVistos.has(msg) || errosVistos.size >= 10) return; errosVistos.add(msg);
+  const x = { msg, onde: String(onde || "").slice(0, 120) }, p = pilhaCurta(pilha); if (p) x.pilha = p;
+  regDiag("erro", x, 2);
+}
 let enviando = false;
 function enviarDiag(saindo) {
   const d = dg(), url = urlDiag(); if (!d.ligado || !url || !d.fila.length || enviando) return;
@@ -11277,12 +11336,10 @@ if (MODO !== "previa") {
   const fecharSessao = () => { contar(); if (tVisivel > 5000) regDiag("tempo", { ativoS: Math.round(tAtivo / 1000), visivelS: Math.round(tVisivel / 1000) }); tAtivo = 0; tVisivel = 0; };
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") { fecharSessao(); enviarDiag(true); } else { visivelDesde = Date.now(); tUlt = Date.now(); } });
   addEventListener("pagehide", () => { fecharSessao(); const x = dg(); x.limpo = true; gravarDg(); enviarDiag(true); });
-  // erros de JavaScript (até 5 diferentes por sessão)
-  const vistos = new Set();
-  const erro = (msg, onde) => { msg = String(msg || "").slice(0, 200); if (vistos.has(msg) || vistos.size >= 5) return; vistos.add(msg); regDiag("erro", { msg, onde: String(onde || "").slice(0, 120) }, 2); };
-  addEventListener("error", e => erro(e.message, (e.filename || "").split("/").pop() + ":" + e.lineno));
-  addEventListener("unhandledrejection", e => erro(e.reason && (e.reason.message || e.reason), "promessa"));
-  (window.__erros || []).forEach(e => erro(e.m, "início"));
+  // erros de JavaScript (1.8.1: com a pilha resumida; ver regErro)
+  addEventListener("error", e => { if (e.message) regErro(e.message, (e.filename || "").split("/").pop() + ":" + e.lineno, e.error && e.error.stack); });
+  addEventListener("unhandledrejection", e => regErro(e.reason && (e.reason.message || e.reason), "promessa", e.reason && e.reason.stack));
+  (window.__erros || []).forEach(e => regErro(e.m, "início", e.p));
   if (MODO !== "menu") {
     regDiag("sessao", { aparelho: aparelho(), tela: `${innerWidth}x${innerHeight}`, saldo: Math.round(S.money), cap: CFG ? CFG.capitulo : null, trapaca: !!(S.trapacas || (CARREIRA && CARREIRA.trapacas)) });
     if (NA_CARREIRA && FASE && !d.iniciados.includes(FASE)) { d.iniciados.push(FASE); gravarDg(); regDiag("capitulo", { acao: "iniciou", dia: S.day }); }
@@ -11987,6 +12044,7 @@ function pulseMoney() { const m = $("money"); m.classList.remove("pulse"); void 
 let toastT; const toasted = {};
 function toast(msg) { if (!msg) return; const t = $("toast"); t.textContent = msg; t.classList.add("show"); clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove("show"), 2600); }
 function toastOnce(key, msg) { if (toasted[key] === S.day) return; toasted[key] = S.day; toast(msg); }
+if (typeof embrulharAvisos === "function") embrulharAvisos();   // 1.8: grava os avisos nos acontecimentos já a partir daqui (antes dependia de um setTimeout)
 let freeTop = 120;
 function measureHudBox() { measureHud(); freeTop = $("hud").getBoundingClientRect().bottom; }
 function hud() {
@@ -12037,14 +12095,24 @@ function restart() {
   hideModal(); paused = false; syncWorkers(); save(); closeSheet(); lastSig = ""; bannerQ = []; recenter(); hud();
 }
 let last = performance.now(), hudT = 0, saveT = 0, dayCheckT = 0;
+// 1.8.1: uma exceção numa parte do quadro (ex.: desenho com coordenada NaN) não pode parar o laço — antes o
+// requestAnimationFrame não era chamado de novo e a loja congelava (o dia nunca mais passava).
+function erroNoLaco(parte, e) {
+  try { if (typeof regErro === "function") regErro(e && e.message || e, "laço: " + parte, e && e.stack); } catch (x) {}
+  if (parte === "draw" || parte === "banner") { try { for (let i = 0; i < 32; i++) ctx.restore(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1; } catch (x) {} }
+}
+function seguroNoLaco(parte, f, a) { try { f(a); } catch (e) { erroNoLaco(parte, e); } }
+function tarefasDoDia() { const before = S.tasks && S.tasks.date; ensureTasks(); if (S.tasks.date !== before) { lastSig = ""; toast("Novas tarefas do dia chegaram!"); } }
 function frame(nowMs) {
-  const dt = Math.min(0.1, (nowMs - last) / 1000); last = nowMs;
-  update(dt); updateFx(dt); updateCars(dt); updateCidade(dt); stepCam(dt); draw(); drawBanner(dt); tickMoney(dt);
-  hudT += dt; saveT += dt; dayCheckT += dt;
-  if (hudT > 0.25) { hudT = 0; hud(); }
-  if (saveT > 5) { saveT = 0; save(); }
-  if (dayCheckT > 30) { dayCheckT = 0; const before = S.tasks && S.tasks.date; ensureTasks(); if (S.tasks.date !== before) { lastSig = ""; toast("Novas tarefas do dia chegaram!"); } }
-  requestAnimationFrame(frame);
+  try {
+    const dt = Math.min(0.1, (nowMs - last) / 1000); last = nowMs;
+    seguroNoLaco("update", update, dt); seguroNoLaco("fx", updateFx, dt); seguroNoLaco("carros", updateCars, dt); seguroNoLaco("cidade", updateCidade, dt);
+    seguroNoLaco("camera", stepCam, dt); seguroNoLaco("draw", draw); seguroNoLaco("banner", drawBanner, dt); seguroNoLaco("dinheiro", tickMoney, dt);
+    hudT += dt; saveT += dt; dayCheckT += dt;
+    if (hudT > 0.25) { hudT = 0; seguroNoLaco("hud", hud); }
+    if (saveT > 5) { saveT = 0; seguroNoLaco("save", save); }
+    if (dayCheckT > 30) { dayCheckT = 0; seguroNoLaco("tarefas", tarefasDoDia); }
+  } finally { requestAnimationFrame(frame); }
 }
 function welcomeBack(o) {
   const hrs = Math.floor(o.away / 3600), mins = Math.floor((o.away % 3600) / 60);
