@@ -1,6 +1,6 @@
 {
-  "versao": "1.8.1",
-  "novidades": "Correção: o jogo não congela mais se um desenho falhar; música no iPhone sem erro; diagnóstico mais detalhado. Quem está começando vai direto para a Carreira; o modo Livre aparece depois do capítulo 1.",
+  "versao": "1.8.2",
+  "novidades": "Correções dos relatos dos testadores: capítulo 9 não trava mais quando todos os caixas têm operador fixo; o painel não rola sozinho ao treinar; aviso de cestas só quando faltam na entrada; qualidade e treinos têm nível máximo; conferentes do CD com animação nova; o selo do topo mostra o nível de gestão na carreira.",
   "pagina": "https://danielcamposdasilva-tech.github.io/mercadinho/baixar/",
   "diag": "https://script.google.com/macros/s/AKfycbyxlY4s_zwKAT7VapTz29wzZ2-OBl7kyoOpUuA1L3CgajFJ6LULtnwbPCi9SQT2KNPjSA/exec",
   "presentes": []

@@ -408,7 +408,7 @@
 <div id="ui">
   <header id="hud">
     <div class="hud-row">
-      <button class="chip lvl" id="lvlChip"><span class="badge-ic" aria-hidden="true"><svg class="i fill"><use href="#i-star"/></svg></span><span class="sr-only">Porte da loja: </span><b id="lvlNum">Nv 1</b></button>
+      <button class="chip lvl" id="lvlChip"><span class="badge-ic" aria-hidden="true"><svg class="i fill"><use href="#i-star"/></svg></span><span class="sr-only" id="lvlRot">Porte da loja: </span><b id="lvlNum">Nv 1</b></button>
       <div class="chip money" id="moneyChip"><span class="badge-ic" aria-hidden="true">M</span><span class="sr-only">Dinheiro: Mumbuca </span><b id="money">0</b></div>
       <button class="chip rep" id="repChip" aria-haspopup="dialog"><svg class="i fill" aria-hidden="true"><use href="#i-star"/></svg><span class="sr-only">Reputação: </span><b id="repNum">3,0</b><span class="sr-only"> estrelas. Toque para ver o motivo e como melhorar</span></button>
       <div class="spacer"></div>
@@ -490,7 +490,9 @@ const DAY_LEN = 90, RUSH = [0.45, 0.65], RUSH_MULT = 1.8;
 const SHELF_PATIENCE = 7, QUEUE_PATIENCE = 15, GEAR_PATIENCE = 6, BASKET_CAP = 3;
 const truckEvery = () => (S.park && S.park.lots.logi ? 6 : 8);
 const MAX_STAFF = 3, MAX_COLLECTORS = 3, DEBT_INTEREST = 0.05;
-const MAX_PRATELEIRA = 7;          // 1.6: nível máximo da prateleira (índice 7 = nível 8, 25 itens); saves acima disso ficam como estão
+const MAX_PRATELEIRA = 7;
+const MAX_QUALIDADE = 10;          // 1.8.2 (relato 86ARGA): qualidade até o nível 11 (preço ×9,3); saves acima disso ficam como estão
+const MAX_TREINO = 14;             // 1.8.2 (relatos NEZMON, DRLJZZ): treino de repositor, caixa e carrinheiro até o nível 15          // 1.6: nível máximo da prateleira (índice 7 = nível 8, 25 itens); saves acima disso ficam como estão
 
 const SECTORS = [
   { id: "mercearia",    name: "Mercearia",    ic: "🥫", color: "#d9822b", price: 2,   base: 8,    open: 0 },
@@ -2009,7 +2011,7 @@ function update(dt) {
         changeRep(head.qWait < 5 ? 0.05 : 0.02, head.qWait < 5 ? "rapido" : "atendido"); if (head.qWait < 5) heart(head.x, head.y - 24);
         if (GANCHOS.atendido) GANCHOS.atendido(head, v);
         float(LANES[l].serve.x, LANES[l].serve.y - 22, `+M ${fmt(v)}`, "#2e7a57"); coinBurst(LANES[l].serve.x, LANES[l].serve.y - 10, Math.min(5, 1 + Math.round(Math.log2(1 + v))));
-        returnGear(head, piles[l]); if (piles[l].b + piles[l].c >= 3) toastOnce("pile", "Cestas acumulando no caixa! Toque nelas para devolver ou contrate carrinheiros.");
+        const estH = estDe(head); returnGear(head, piles[l]); avisoPilhaCestas(piles[l], estH);
         head.state = "exit"; head.lane = null; ln.servingId = null;
         head.path = caminhoSaida(head);
       }
@@ -2058,6 +2060,13 @@ function planOrder() {
     }
   }
   return order;
+}
+
+// 1.8.2 (relato OXL8Q5): "cestas acumulando" só quando elas estão faltando onde os clientes pegam (na entrada),
+// não só porque há uma pilha no caixa; antes aparecia todo dia mesmo com a entrada cheia
+function avisoPilhaCestas(pilha, est) {
+  if (pilha.b + pilha.c < 3 || est.b + est.c >= 3) return false;
+  toastOnce("pile", "Cestas acumulando no caixa e faltando na entrada! Toque nelas para devolver ou contrate carrinheiros."); return true;
 }
 </script>
 <script>
@@ -6306,10 +6315,14 @@ function sugestaoEncomenda(id) {
 }
 function usarSugestao() { const o = orla(); ORLA.itens.forEach(it => o.encomenda[it.id] = sugestaoEncomenda(it.id)); toast("Encomenda ajustada pela previsão de amanhã."); save(); lastSig = ""; renderSheet(); }
 const vagasTemp = () => Math.max(0, LANES.length - S.cashiers);
+// 1.8.2 (relato 65JPBM): quem contratou operador fixo para todos os caixas não tem onde pôr temporário; a meta
+// "reforçar os caixas" conta assim mesmo (antes travava o capítulo: pedia temporário e o botão recusava)
+const caixasCheiosOrla = () => S.cashiers >= ((CENARIOS.orla.loja && CENARIOS.orla.loja.caixasN) || 4);
+const caixasDoVerao = () => (orla().maxTempVerao >= 1 || caixasCheiosOrla()) ? 1 : 0;
 function contratarTemp(d) {
   const o = orla();
   if (d > 0) {
-    if (tempAtivos() >= vagasTemp()) { toast(vagasTemp() ? `Só há ${vagasTemp()} caixas sem operador para os temporários.` : "Todos os caixas já têm operador fixo."); return; }
+    if (tempAtivos() >= vagasTemp()) { toast(vagasTemp() ? `Só há ${vagasTemp()} caixas sem operador para os temporários.` : "Todos os caixas já têm operador fixo: não precisa de temporário, a meta de reforçar os caixas já conta."); return; }
     if (!pagarContratacao(ORLA.temp.contratar, "um temporário")) return;
     if (o.tempAte < S.day) o.temp = 0;
     o.temp++; o.tempAte = fimDaEstacao();
@@ -6435,7 +6448,7 @@ FASE_CFG.orla = {
   estrutura: [
     { id: "barraca", label: "Abrir a barraca de praia", como: "Toque no ponto da barraca, na areia, ou use a aba Carreira.", have: () => orla().barraqueiro ? 1 : 0, need: 1, painel: "barraca" },
     { id: "freezer", label: "Freezer na barraca", como: "Picolé que sobra não estraga mais.", have: () => orla().freezer ? 1 : 0, need: 1, painel: "barraca" },
-    { id: "temporarios", label: "Contratar temporário para o verão", como: "Aba Carreira > Temporada. Ele abre um caixa livre e fica até o fim da estação.", have: () => Math.min(1, orla().maxTempVerao), need: 1, painel: "temporada" },
+    { id: "temporarios", label: "Reforçar os caixas para o verão", como: "Aba Carreira > Temporada: um temporário abre um caixa livre e fica até o fim da estação. Se todos os caixas já têm operador fixo, a meta já conta.", have: caixasDoVerao, need: 1, painel: "temporada" },
     { id: "vagas", label: "Ampliar o estacionamento", como: "Turista vem de carro: toque no terreno ao lado das vagas.", have: () => owns("park1") ? 1 : 0, need: 1 },
   ],
   extras() {
@@ -6815,7 +6828,8 @@ function desenharCD() {
   for (let k = 0; k < nDocas(); k++) { const dy = Y.entrada.y + 30 + k * 120; rr(-6, dy, 14, 70, 2, "#4b5a62"); text(`DOCA ${k + 1}`, Y.entrada.x + 44, dy + 84, 6, "#4b5a62", "center", 800); }
   c.carretas.forEach((k, i) => {
     const d = secDef(k.cat);
-    if (k.estado === "descarregando") { const di = c.carretas.filter(z => z.estado === "descarregando").indexOf(k), dy = Y.entrada.y + 30 + di * 120; carretaCD(-70, dy + 35, d); const p = (k.t * 2) % 1; rr(20 + p * 70, dy + 28, 16, 12, 2, "#c99a5b"); empilhadeira(24 + p * 70, dy + 44); }
+    if (k.estado === "descarregando") { const di = c.carretas.filter(z => z.estado === "descarregando").indexOf(k), dy = Y.entrada.y + 30 + di * 120; carretaCD(-70, dy + 35, d); const p = (k.t * 2) % 1, vai = p < 0.5, u = vai ? p * 2 : 2 - p * 2;   // 1.8.2: vai e volta (antes pulava de volta ao início)
+      empilhadeira(24 + u * 70, dy + 44, vai, !vai); }
     else { const f = Math.min(1, k.t / CD.chegada); carretaCD(-260 + f * 150, -40 - (i % 3) * 14 + 30, d, true); }
   });
   // expedição: pedidos prontos por rota e caminhões
@@ -6836,12 +6850,26 @@ function desenharCD() {
   rr(Y.sep.x, Y.sep.y, Y.sep.w, Y.sep.h, 6, "rgba(242,178,51,.12)");
   text(`SEPARAÇÃO · ${c.conferentes} conferente(s)${c.coletor ? " com coletor" : ""}`, Y.sep.x + 6, Y.sep.y + 12, 6.5, "#8a6a1e", "left", 800);
   const ativos = c.pedidos.some(p => p.estado === "novo" || p.estado === "separando");
-  for (let k = 0; k < c.conferentes; k++) {
-    const fase = ativos ? (t * 0.25 + k / c.conferentes) % 1 : 0.1 + k * 0.05, ida = fase < 0.5, u = ida ? fase * 2 : 2 - fase * 2;
-    const x = Y.rack.x + 30 + (k * 61) % (Y.rack.w - 60) + u * (Y.saida.x - Y.rack.x - 40 - (k * 61) % (Y.rack.w - 60)) * (ativos ? 1 : 0), y = Y.sep.y + 34 + (k % 2) * 16;
-    person({ x, y, skin: SKIN[k % SKIN.length], hair: HAIR[(k + 2) % HAIR.length], id: 1200 + k }, { body: "#f2b233", cap: "#2a4f7a", moving: ativos, box: ativos && !ida ? "📦" : null });
+  for (let k = 0; k < c.conferentes; k++) { const q = posConferente(k, c, t, ativos, Y);
+    person({ x: q.x, y: q.y, skin: SKIN[k % SKIN.length], hair: HAIR[(k + 2) % HAIR.length], id: 1200 + k }, { body: "#f2b233", cap: "#2a4f7a", moving: q.andando, box: q.caixa ? "📦" : null });
+    if (q.pegando) { const f = q.pegando; rr(q.x - 7, q.y - 34 + 8 * f, 14, 10, 2, "#c99a5b"); rr(q.x - 7, q.y - 31 + 8 * f, 14, 2, 0, "#a87b42"); }   // tirando o fardo da prateleira
   }
   drawCidade(0); drawCars(); drawCidade(1); drawParking();
+}
+// 1.8.2 (relato KLKMUN): cada conferente faz um ciclo de trabalho: anda até um ponto do porta-paletes (muda a
+// cada volta), para e tira o fardo da prateleira, leva até a expedição, deixa e volta. Antes todos deslizavam em
+// fila de um lado para o outro, sempre no mesmo ritmo. Sem pedidos, ficam parados perto da expedição.
+function posConferente(k, c, t, ativos, Y) {
+  const yb = Y.sep.y + 34 + (k % 2) * 16, xDrop = Y.saida.x - 16 - (k % 3) * 9;
+  if (!ativos) return { x: xDrop - 40 - k * 22, y: yb, andando: false };
+  const vel = c.coletor ? 62 : 48, longe = xDrop - (Y.rack.x + 20), T = 2 * longe / vel + 2.2;
+  const tt = t + k * 2.9 + k * k * 0.7, ci = Math.floor(tt / T), r = tt - ci * T;
+  const h = Math.abs(Math.sin(ci * 12.9898 + k * 78.233) * 43758.5453) % 1, xPick = Y.rack.x + 20 + h * (Y.rack.w - 40);
+  const dist = xDrop - xPick, tw = dist / vel, sobra = T - 2 * tw - 1.4, tPick = 0.9 + sobra * 0.5, tDrop = 0.5 + sobra * 0.5;
+  if (r < tw) return { x: xDrop - dist * (r / tw), y: yb, andando: true };                                  // indo buscar
+  if (r < tw + tPick) { const f = Math.min(1, (r - tw) / tPick); return { x: xPick, y: yb - 6 * Math.sin(Math.PI * f), andando: false, pegando: f < 0.85 ? f / 0.85 : 0, caixa: f >= 0.85 }; }
+  if (r < 2 * tw + tPick) return { x: xPick + dist * ((r - tw - tPick) / tw), y: yb, andando: true, caixa: true };   // levando o fardo
+  return { x: xDrop, y: yb, andando: false, caixa: r < 2 * tw + tPick + 0.25 };                               // deixa na expedição
 }
 function carretaCD(x, y, d, longe) {
   ctx.save(); ctx.translate(x, y); if (longe) ctx.scale(.8, .8);
@@ -6856,7 +6884,16 @@ function caminhao(x, y, cor, indo) {
   ctx.fillStyle = "#2a2620"; [-14, 0, 14].forEach(dx => { ctx.beginPath(); ctx.arc(dx, 10, 3, 0, 7); ctx.fill(); });
   ctx.restore();
 }
-function empilhadeira(x, y) { rr(x - 8, y - 6, 14, 10, 2, "#f2b233"); rr(x + 6, y - 14, 2, 18, 1, "#4b5a62"); ctx.fillStyle = "#2a2620"; ctx.beginPath(); ctx.arc(x - 5, y + 5, 2.5, 0, 7); ctx.arc(x + 3, y + 5, 2.5, 0, 7); ctx.fill(); }
+function empilhadeira(x, y, carga, re) {
+  // 1.8.2 (relato KLKMUN): operador na cabine, garfo com o fardo só na ida, rodas girando
+  rr(x - 8, y - 6, 14, 10, 2, "#f2b233"); rr(x + 6, y - 14, 2, 18, 1, "#4b5a62"); rr(x + 7, y + 2, 8, 2, 1, "#4b5a62");
+  ctx.strokeStyle = "#4b5a62"; ctx.lineWidth = 1; ctx.strokeRect(x - 7, y - 15, 9, 9);
+  ctx.fillStyle = "#f2cfa6"; ctx.beginPath(); ctx.arc(x - 3, y - 9, 2.6, 0, 7); ctx.fill(); rr(x - 5.5, y - 12.5, 5, 2, 1, "#2a4f7a");
+  if (carga) { rr(x + 7, y - 10, 14, 12, 2, "#c99a5b"); rr(x + 7, y - 6, 14, 2, 0, "#a87b42"); }
+  const g = REDUZ() ? 0 : now() * (re ? -9 : 9);
+  [x - 5, x + 3].forEach(cx => { ctx.fillStyle = "#2a2620"; ctx.beginPath(); ctx.arc(cx, y + 5, 2.5, 0, 7); ctx.fill();
+    ctx.strokeStyle = "rgba(255,255,255,.5)"; ctx.lineWidth = .7; ctx.beginPath(); ctx.moveTo(cx, y + 5); ctx.lineTo(cx + Math.cos(g) * 2.2, y + 5 + Math.sin(g) * 2.2); ctx.stroke(); });
+}
 
 // ---------- painéis ----------
 function linhaPedidoCD(p) {
@@ -9739,8 +9776,8 @@ function actions() {
     }
     list.push({ key: `shelf:${d.id}`, sec: i, kind: "shelf", title: "Prateleira", info: st.shelfLvl >= MAX_PRATELEIRA ? `${shelfCap(st.shelfLvl)} itens: tamanho máximo da gôndola` : `${shelfCap(st.shelfLvl)} → ${shelfCap(st.shelfLvl + 1)} itens`,
       cost: Math.ceil(d.base * Math.pow(G, st.shelfLvl)), maxed: st.shelfLvl >= MAX_PRATELEIRA, run: () => st.shelfLvl++ });
-    list.push({ key: `price:${d.id}`, sec: i, kind: "price", title: "Qualidade", info: `M ${fmt(secPrice(d, st.priceLvl))} → M ${fmt(secPrice(d, st.priceLvl + 1))}`,
-      cost: Math.ceil(d.base * 2 * Math.pow(1.45, st.priceLvl)), run: () => st.priceLvl++ });
+    list.push({ key: `price:${d.id}`, sec: i, kind: "price", title: "Qualidade", info: st.priceLvl >= MAX_QUALIDADE ? `M ${fmt(secPrice(d, st.priceLvl))}: qualidade máxima` : `M ${fmt(secPrice(d, st.priceLvl))} → M ${fmt(secPrice(d, st.priceLvl + 1))}`,
+      cost: Math.ceil(d.base * 2 * Math.pow(1.45, st.priceLvl)), maxed: st.priceLvl >= MAX_QUALIDADE, run: () => st.priceLvl++ });
     list.push({ key: `hire:${d.id}`, sec: i, kind: "hire", title: "Contratar", info: st.staff >= MAX_STAFF ? `Equipe completa (${st.staff})` : `Repositores ${st.staff} → ${st.staff + 1}`,
       cost: Math.ceil(d.base * 5 * Math.pow(2.5, st.staff - 1)), maxed: st.staff >= MAX_STAFF, run: () => st.staff++ });
     list.push({ key: `train:${d.id}`, sec: i, kind: "train", title: `Treinar (nv ${st.staffLvl})`, info: `Mais rápidos, levam ${staffCarry(st.staffLvl + 1)}`,
@@ -9893,11 +9930,11 @@ const nvPark = k => { const a = eqPark(); return a[k] ? a[k].v : (S.park.train |
 // ---------- custo e treino de uma pessoa ----------
 const TIPOS_EQ = {
   rep: { lista: ref => eqRep(ref), custo: (v, ref) => Math.ceil(SECTORS.find(d => d.id === ref).base * 1.5 * Math.pow(G, v) * NV_CFG.fatorCusto),
-    efeito: v => `velocidade ${staffSpd(v)}, leva ${staffCarry(v)}`, prox: v => `leva ${staffCarry(v + 1)}, mais rápido`, papel: "repositor", max: () => false },
+    efeito: v => `velocidade ${staffSpd(v)}, leva ${staffCarry(v)}`, prox: v => `leva ${staffCarry(v + 1)}, mais rápido`, papel: "repositor", max: v => v >= MAX_TREINO },
   caixa: { lista: () => eqCaixa(), custo: v => Math.ceil(10 * Math.pow(G, v) * NV_CFG.fatorCusto),
-    efeito: v => `${cashTime(v).toFixed(2).replace(".", ",")} s por item`, prox: v => `${cashTime(v + 1).toFixed(2).replace(".", ",")} s por item`, papel: "operador de caixa", max: () => false },
+    efeito: v => `${cashTime(v).toFixed(2).replace(".", ",")} s por item`, prox: v => `${cashTime(v + 1).toFixed(2).replace(".", ",")} s por item`, papel: "operador de caixa", max: v => v >= MAX_TREINO || cashTime(v + 1) >= cashTime(v) },
   col: { lista: () => eqCol(), custo: v => Math.ceil(15 * Math.pow(G, v) * NV_CFG.fatorCusto),
-    efeito: v => `velocidade ${colSpeed(v)}, leva ${colCarry(v)}`, prox: v => `leva ${colCarry(v + 1)} por vez, mais rápido`, papel: "carrinheiro", max: () => false },
+    efeito: v => `velocidade ${colSpeed(v)}, leva ${colCarry(v)}`, prox: v => `leva ${colCarry(v + 1)} por vez, mais rápido`, papel: "carrinheiro", max: v => v >= MAX_TREINO },
   park: { lista: () => eqPark(), custo: v => Math.ceil(25 * Math.pow(1.45, v) * NV_CFG.fatorCusto),
     efeito: v => `${Math.round((1 - parkTrain(v)) * 100)}% mais rápido`, prox: v => `${Math.round((1 - parkTrain(v + 1)) * 100)}% mais rápido`, papel: "atendente", max: v => parkTrain(v) <= 0.35 + 1e-9 },
 };
@@ -9919,7 +9956,9 @@ function treinarPessoa(tipo, ref, k, silencioso) {
       if (k < 0) { a.title = "Treinar"; a.info = `Contrate um ${T.papel} primeiro`; a.locked = true; a.lockText = "Ninguém na equipe"; a.ok = false; return; }
       const p = eq[k]; a.title = `Treinar ${p.n} (nv ${p.v + 1} → ${p.v + 2})`; a.info = `${T.prox(p.v)}. Quem tem menos treino; no painel você escolhe outra pessoa.`;
       a.cost = T.custo(p.v, ref); a.maxed = T.max(p.v); a.locked = false;
-      a.run = () => { p.v++; }; a.ok = !a.locked && !a.maxed && S.money >= a.cost && S.money >= 0; };
+      a.run = () => { p.v++; };
+      if (a.maxed) { a.title = "Treinar"; a.info = `Toda a equipe já está no nível máximo (${p.v + 1}).`; }     // 1.8.2: o menos treinado já está no teto
+      a.ok = !a.locked && !a.maxed && S.money >= a.cost && S.money >= 0; };
     SECTORS.forEach(d => troca(`train:${d.id}`, "rep", d.id));
     troca("cashtrain", "caixa"); troca("traincol", "col"); if (CANCELA) troca("parktrain", "park");
     return list;
@@ -10439,6 +10478,10 @@ function renderSheet() {
     else if (ui.sheet === "lista") buildLista(body);
     else if (ui.sheet === "forn") buildFornecedores(body);
     else if (PAINEIS[ui.sheet]) PAINEIS[ui.sheet](body, acts);
+    // 1.8.2 (relato 48ZKS2): preenche textos e rótulos (live) ANTES de devolver a rolagem; os botões de treino
+    // por pessoa só ganham texto e aria-label no live(), e sem isso a âncora não achava o botão tocado
+    acts.forEach(a => { const b = panelEls[a.key]; if (b) paintAct(b, a); });
+    liveFns.forEach(f => f());
     body.scrollTop = keep; restaurarAncora(body, ancora);
   }
   acts.forEach(a => { const b = panelEls[a.key]; if (b) paintAct(b, a); });
@@ -10933,7 +10976,7 @@ function resumoOperacao(t, o) {
 //   · Painel de trapaças (modo desenvolvedor): 7 toques na versão nas Configurações + código.
 //     Todo uso fica marcado no save (S.trapacas / CARREIRA.trapacas).
 // =====================================================================
-const APP_VERSAO = "1.8.1";
+const APP_VERSAO = "1.8.2";
 const SITE_JOGO = "https://danielcamposdasilva-tech.github.io/mercadinho/";
 const WHATS_SUPORTE = "5521988612660";
 const DEV_HASH = 1898547767;                  // código do modo desenvolvedor (só o hash fica no jogo)
@@ -11332,7 +11375,12 @@ if (MODO !== "previa") {
   ["pointerdown", "keydown", "touchstart"].forEach(ev => addEventListener(ev, () => { ultToque = Date.now(); }, { passive: true, capture: true }));
   const contar = () => { const t = Date.now(), dt = Math.min(5000, t - tUlt); tUlt = t; if (document.visibilityState === "visible") { tVisivel += dt; if (t - ultToque < 60e3) tAtivo += dt; } };
   // congelamento: o relógio não andou por mais de 5 s com a tela visível o tempo todo
-  setInterval(() => { const t = Date.now(), gap = t - tUlt; if (document.visibilityState === "visible" && gap > 5000 && t - visivelDesde > gap + 1000) regDiag("congelamento", { ms: gap }, 1); contar(); }, 1000);
+  // 1.8.2: lacuna de mais de 1 min é o aparelho que suspendeu o app (iPhone na tela inicial pode ficar "visível" por
+  // horas sem rodar nada), não travamento: não registra e recomeça a contagem dali (antes vinha "congelamento" de 11 h)
+  const SUSPENSO_MS = 60e3;
+  setInterval(() => { const t = Date.now(), gap = t - tUlt;
+    if (gap > SUSPENSO_MS) { tUlt = t; visivelDesde = t; return; }
+    if (document.visibilityState === "visible" && gap > 5000 && t - visivelDesde > gap + 1000) regDiag("congelamento", { ms: gap }, 1); contar(); }, 1000);
   const fecharSessao = () => { contar(); if (tVisivel > 5000) regDiag("tempo", { ativoS: Math.round(tAtivo / 1000), visivelS: Math.round(tVisivel / 1000) }); tAtivo = 0; tVisivel = 0; };
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") { fecharSessao(); enviarDiag(true); } else { visivelDesde = Date.now(); tUlt = Date.now(); } });
   addEventListener("pagehide", () => { fecharSessao(); const x = dg(); x.limpo = true; gravarDg(); enviarDiag(true); });
@@ -12050,7 +12098,10 @@ function measureHudBox() { measureHud(); freeTop = $("hud").getBoundingClientRec
 function hud() {
   const { h, m } = clockTime(), b = bills(), nx = TIERS[S.tier + 1], acts = actions();
   $("money").classList.toggle("neg", S.money < 0);
-  $("lvlNum").textContent = `Nv ${S.tier + 1}`;
+  // 1.8.2 (relato 88G1AW): na carreira o porte da loja fica fixo por capítulo ("Nv 2" do começo ao fim); lá o selo
+  // mostra o nível de gestão, que sobe com a experiência de cada capítulo concluído
+  const nvCar = NA_CARREIRA && typeof nivelGestao === "function", nvTxt = `Nv ${nvCar ? nivelGestao() : S.tier + 1}`;
+  if ($("lvlNum").textContent !== nvTxt) { $("lvlNum").textContent = nvTxt; const r = $("lvlRot"); if (r) r.textContent = nvCar ? "Nível de gestão: " : "Porte da loja: "; }
   $("repNum").textContent = S.rep.toFixed(1).replace(".", ",");
   if (NA_CARREIRA) {
     const reqs = faseReqs(), ok = reqs.filter(r => r.have >= r.need - 1e-9).length, p = faseProgresso();
