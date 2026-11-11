@@ -1,6 +1,6 @@
 {
-  "versao": "1.8.2",
-  "novidades": "Correções dos relatos dos testadores: capítulo 9 não trava mais quando todos os caixas têm operador fixo; o painel não rola sozinho ao treinar; aviso de cestas só quando faltam na entrada; qualidade e treinos têm nível máximo; conferentes do CD com animação nova; o selo do topo mostra o nível de gestão na carreira.",
+  "versao": "1.8.3",
+  "novidades": "Capítulo 9: o painel de temporários avisa quando todos os caixas já têm operador fixo (a meta já conta); dias com o app fechado agora contam no verão e no inverno; o relato de problema mostra o que falta para concluir o capítulo. Inclui as correções da 1.8.2.",
   "pagina": "https://danielcamposdasilva-tech.github.io/mercadinho/baixar/",
   "diag": "https://script.google.com/macros/s/AKfycbyxlY4s_zwKAT7VapTz29wzZ2-OBl7kyoOpUuA1L3CgajFJ6LULtnwbPCi9SQT2KNPjSA/exec",
   "presentes": []

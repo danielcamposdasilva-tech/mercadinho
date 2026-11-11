@@ -6403,7 +6403,9 @@ function buildTemporada(body) {
   head("🌤️", "#fdf1dc", "Temporada e temporários", () => `${estacao().ic} ${estacao().nome} · ${tempAtivos()} temporário(s) · ${nCaixas()} de ${LANES.length} caixas abertos`);
   body.appendChild(cartaoTemporada(dicaTemporada));
   const tc = el("div", "card", `<h3>🧑‍💼 Temporários</h3><p class="note">Contratados até o fim da estação (dia ${fimDaEstacao()}). Cada um abre um caixa sem operador fixo. Contratação M ${ORLA.temp.contratar}, diária M ${ORLA.temp.diaria}. No verão a fila cresce rápido; no inverno sobra gente.</p>`);
-  tc.appendChild(passo("Temporários agora", () => `${tempAtivos()} de ${vagasTemp()}`, () => contratarTemp(-1), () => contratarTemp(1), "temporários"));
+  // 1.8.3 (relato 3NBNI5): com todos os caixas fixos, diz claramente que não precisa de temporário (antes: "0 de 0")
+  if (!vagasTemp() && !tempAtivos()) tc.appendChild(el("p", "note ok-meta", `✅ Os ${LANES.length} caixas já têm operador fixo. Não há vaga para temporário e a meta "Reforçar os caixas para o verão" já está cumprida.`));
+  else tc.appendChild(passo("Temporários agora", () => `${tempAtivos()} de ${vagasTemp()}`, () => contratarTemp(-1), () => contratarTemp(1), "temporários"));
   body.appendChild(tc);
   body.appendChild(el("div", "sec-title", "Este ano"));
   const anos = Object.values(o.estacoes).slice(-5);
@@ -6458,10 +6460,10 @@ FASE_CFG.orla = {
     const invAtual = vs.filter(r => r.id === "inverno").slice(-1)[0];
     return [
       { id: "itens", label: `Vender ${ORLA.metas.itens} itens na barraca`, tipo: "gestao", have: o.totVendidos, need: ORLA.metas.itens, como: "Gelo, picolé e protetor. Vendas de dias com o app fechado não contam." },
-      { id: "verao", label: `Verão lucrativo: M ${fmt(ORLA.metas.verao)} de lucro somado num verão`, tipo: "gestao", have: melhorVerao, need: ORLA.metas.verao, money: true, como: "Soma do resultado dos 4 dias de um mesmo verão. Turistas, temporários nos caixas e barraca bem abastecida." },
+      { id: "verao", label: `Verão lucrativo: M ${fmt(ORLA.metas.verao)} de lucro somado num verão`, tipo: "gestao", have: melhorVerao, need: ORLA.metas.verao, money: true, como: "Soma do resultado dos 4 dias de um mesmo verão. Turistas, todos os caixas abertos (fixos ou temporários) e barraca bem abastecida. Dias com o app fechado também contam." },
       { id: "inverno", label: "Inverno sem prejuízo: 4 dias de inverno sem fechar no vermelho", tipo: "gestao", have: invernoOk ? 1 : 0, need: 1,
         mostra: () => invernoOk ? "cumprido" : invAtual ? `${invAtual.dias}/4 dias, ${invAtual.vermelho} no vermelho` : `inverno no dia ${diaInverno()}`,
-        como: "No inverno o movimento cai: reduza temporários e encomendas, cuide do estoque. Um dia no vermelho estraga o inverno; espere o próximo." },
+        como: "No inverno o movimento cai: reduza temporários e encomendas, cuide do estoque. Um dia no vermelho estraga o inverno; espere o próximo. Dias com o app fechado contam como dias sem prejuízo." },
       { id: "planejados", label: `${ORLA.metas.bemPlanejados} dias de barraca bem planejada`, tipo: "gestao", have: o.bemPlanejados, need: ORLA.metas.bemPlanejados,
         como: "Dia com procura de pelo menos 10 itens em que faltou até 12% e o desperdício ficou até 20% do que chegou." },
     ];
@@ -6537,6 +6539,13 @@ if (ORLA_ATIVO) {
     let perd = 0; ORLA.itens.forEach(it => { const p = Math.round(o.estoque[it.id] * (o.freezer ? it.perdaFreezer : it.perda)); o.estoque[it.id] -= p; perd += p; });
     if (perd) L.push(["Itens da barraca perdidos enquanto você esteve fora", String(perd)]);
     if (o.tempAte < S.day && o.temp) { L.push(["Contrato dos temporários terminou", `${o.temp}`]); o.temp = 0; }
+    // 1.8.3 (relato 3NBNI5): os dias que passaram com o app fechado entram nas estações (resultado do gerente, nunca
+    // negativo). Antes ficavam de fora: um inverno com um dia fora nunca chegava a 4 dias e a meta não fechava.
+    const net = Math.round(Math.max(0, S.avgNet || 0) * mgrEff(S.mgrLvl) * 100) / 100;
+    for (let d = S.day - days; d < S.day; d++) { const est = estacao(d), chave = `${anoDoJogo(d)}-${est.id}`,
+      r = o.estacoes[chave] || (o.estacoes[chave] = { id: est.id, ano: anoDoJogo(d), lucro: 0, vermelho: 0, dias: 0 });
+      if (r.dias < DIAS_ESTACAO) { r.dias++; r.lucro = Math.round((r.lucro + net) * 100) / 100; } }
+    const ks = Object.keys(o.estacoes); if (ks.length > 10) ks.slice(0, ks.length - 10).forEach(k => delete o.estacoes[k]);
     o.hoje = novoHojeOrla(); o.acc = {}; o.diaEntrega = S.day - 1;
     return L;
   };
@@ -10976,7 +10985,7 @@ function resumoOperacao(t, o) {
 //   · Painel de trapaças (modo desenvolvedor): 7 toques na versão nas Configurações + código.
 //     Todo uso fica marcado no save (S.trapacas / CARREIRA.trapacas).
 // =====================================================================
-const APP_VERSAO = "1.8.2";
+const APP_VERSAO = "1.8.3";
 const SITE_JOGO = "https://danielcamposdasilva-tech.github.io/mercadinho/";
 const WHATS_SUPORTE = "5521988612660";
 const DEV_HASH = 1898547767;                  // código do modo desenvolvedor (só o hash fica no jogo)
@@ -11017,6 +11026,9 @@ function diagnosticoLinhas() {
   if (NA_CARREIRA && FASE === "grande" && S.obra) { const o = S.obra, m = typeof motivoParada === "function" && o.fase !== "operacao" ? motivoParada() : null;
     L.push(`Obra: ${o.fase}, ${Math.round(o.pct)}%, licenças ${Object.values(o.lic).filter(x => x.ok).length}/5${m ? `, ${MOTIVO_TXT[m]}` : ""}${o.resgate ? ", resgate usado" : ""}`); }
   if (NA_CARREIRA && FASE === "cajueiro" && S.atac) { const a = S.atac; L.push(`Atacado: ${a.totFardos} fardos, ${a.nPos} posições, ${a.ops} empilhadeiras (${a.opsDoca} na doca), compra automática ${a.auto ? "ligada" : "desligada"}`); }
+  // 1.8.3: o relato diz o que falta para concluir o capítulo (no 3NBNI5 não dava para saber qual meta travava)
+  if (NA_CARREIRA && typeof faseReqs === "function") { try { const f = faseReqs().filter(r => r.have < r.need - 1e-9);
+    if (f.length) L.push("Falta: " + f.map(r => `${r.label} (${r.money ? `M ${fmt(r.have)}/${fmt(r.need)}` : r.pct ? `${Math.round(r.have * 100)}%/${Math.round(r.need * 100)}%` : `${fmt(r.have)}/${fmt(r.need)}`})`).join("; ").slice(0, 420)); } catch (e) {} }
   if (S.trapacas || (CARREIRA && CARREIRA.trapacas)) L.push("Trapaças usadas nesta partida");
   if (S.presentes && S.presentes.length) L.push(`Presentes do suporte recebidos: ${S.presentes.map(p => p.tipo + " " + p.valor).join(", ")}`);
   const er = (window.__erros || []).slice(-5); if (er.length) L.push("Erros: " + er.map(e => e.m).join(" | "));
