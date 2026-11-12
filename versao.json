@@ -1,6 +1,6 @@
 {
-  "versao": "1.8.3",
-  "novidades": "Capítulo 9: o painel de temporários avisa quando todos os caixas já têm operador fixo (a meta já conta); dias com o app fechado agora contam no verão e no inverno; o relato de problema mostra o que falta para concluir o capítulo. Inclui as correções da 1.8.2.",
+  "versao": "1.9",
+  "novidades": "Lojas grandes mais vivas: no Supermercado em diante do modo Livre cabe mais gente, a fila do caixa cresce e cliente desiste de fila grande; o caminhão vem mais espaçado, com carga maior e frete, e o depósito volta a fazer diferença. Treino acima do nível 6 rende menos. Crédito do banco acompanha o lucro da loja e chegou o agiota (empresta muito, cobra caro). Vagas avulsas no convênio para quando o estacionamento lota.",
   "pagina": "https://danielcamposdasilva-tech.github.io/mercadinho/baixar/",
   "diag": "https://script.google.com/macros/s/AKfycbyxlY4s_zwKAT7VapTz29wzZ2-OBl7kyoOpUuA1L3CgajFJ6LULtnwbPCi9SQT2KNPjSA/exec",
   "presentes": []

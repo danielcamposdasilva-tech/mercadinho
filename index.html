@@ -487,8 +487,13 @@ var canvasOK = false;
 // Balance. Every number here is original to this prototype.
 // =====================================================================
 const DAY_LEN = 90, RUSH = [0.45, 0.65], RUSH_MULT = 1.8;
-const SHELF_PATIENCE = 7, QUEUE_PATIENCE = 15, GEAR_PATIENCE = 6, BASKET_CAP = 3;
-const truckEvery = () => (S.park && S.park.lots.logi ? 6 : 8);
+const SHELF_PATIENCE = 7, QUEUE_PATIENCE = 15, FILA_DESISTE = 6, GEAR_PATIENCE = 6, BASKET_CAP = 3;
+// 1.9 (dicas de outro programador, aprovadas pelo Daniel): em loja grande do Livre (Supermercado em diante) o caminhão
+// vem mais espaçado, traz carga maior e cobra frete por viagem; o depósito volta a fazer diferença. Lojas menores e a
+// carreira (porte 0 e 1) continuam iguais.
+const lojaGrande = () => MODO !== "carreira" && S.tier >= 2;
+const truckEvery = () => lojaGrande() ? (S.park && S.park.lots.logi ? 9 : 12) : (S.park && S.park.lots.logi ? 6 : 8);
+const freteViagem = () => lojaGrande() ? Math.round(10 * Math.pow(2, S.tier - 2)) : 0;
 const MAX_STAFF = 3, MAX_COLLECTORS = 3, DEBT_INTEREST = 0.05;
 const MAX_PRATELEIRA = 7;
 const MAX_QUALIDADE = 10;          // 1.8.2 (relato 86ARGA): qualidade até o nível 11 (preço ×9,3); saves acima disso ficam como estão
@@ -536,11 +541,13 @@ const demand    = () => tierNow().mult;
 const shelfCap  = l => 4 + 3 * l;
 const secPrice  = (s, l) => Math.round(s.price * Math.pow(1.25, l) * 100) / 100;
 const boxCost   = (s, l) => Math.round(secPrice(s, l) * 0.4 * 100) / 100;
-const staffSpd  = l => 75 + 14 * l;
-const staffCarry = l => 3 + Math.floor(l / 2);
-const cashTime  = l => Math.max(0.1, 0.9 * Math.pow(0.86, l));
+// 1.9: treino acima do nível 6 continua ajudando, mas cada nível vale menos (antes repositor e caixa ficavam rápidos demais)
+const nvEfetivo = (l, k) => l <= 6 ? l : 6 + (l - 6) * k;
+const staffSpd  = l => 75 + 14 * nvEfetivo(l, 0.4);
+const staffCarry = l => 3 + Math.floor(nvEfetivo(l, 0.5) / 2);
+const cashTime  = l => Math.max(0.1, 0.9 * Math.pow(0.86, nvEfetivo(l, 0.35)));
 const whCap     = l => (20 + 12 * l) * (SCENE.depositoMult || 1);   // o Ipê (capítulo 3) tem depósito de supermercado: o dobro
-const truckLoad = l => 8 + 5 * l + (S.park && S.park.lots.logi ? 4 : 0);
+const truckLoad = l => Math.round((8 + 5 * l + (S.park && S.park.lots.logi ? 4 : 0)) * (lojaGrande() ? 1.25 : 1));
 const spawnGap  = l => Math.max(0.35, 3.0 * Math.pow(0.86, l));
 const colSpeed  = l => 60 + 14 * l, colCarry = l => 2 + l;
 const mgrEff    = l => Math.min(0.7, 0.2 + 0.1 * l);       // share of normal profit earned while away
@@ -1481,10 +1488,13 @@ function follow(e, speed, dt) {
 const corredorPara = (x0, x1) => LOJA.corredores.reduce((b, a) => Math.abs(x0 - a) + Math.abs(x1 - a) < Math.abs(x0 - b) + Math.abs(x1 - b) ? a : b);
 const routeTo = (e, x, y) => { const a = corredorPara(e.x, x); return [{ x: a, y: e.y }, { x: a, y }, { x, y }]; };
 
+// 1.9: a loja grande do Livre comporta mais gente a pé (antes o movimento parava em ~107 atendidos por dia)
+const lotacaoPe = nSet => 8 + 2 * nSet + (lojaGrande() ? 6 * (S.tier - 1) : 0);
+let entradaForcada = false;          // vagas avulsas (06u): quem estacionou no convênio entra mesmo com a loja cheia
 function spawnCustomer(car, idx) {
   if (GANCHOS.chegada) return GANCHOS.chegada(car, idx);              // shopping: visitante em vez de cliente de mercado
   const open = openSectors();
-  if (!car && customers.filter(o => o.state !== "outside").length >= 8 + 2 * open.length) return;
+  if (!car && !entradaForcada && customers.filter(o => o.state !== "outside").length >= lotacaoPe(open.length)) return;
   // duas entradas: quem vem de carro entra pelo estacionamento; a pé, a maioria vem da avenida (compra rápida)
   const ent = ENT2 ? (car ? 0 : (Math.random() < 0.8 ? 1 : 0)) : 0;
   let n = Math.min(open.length, 1 + (Math.random() < 0.55 ? 1 : 0) + (Math.random() < 0.3 ? 1 : 0) + (Math.random() < 0.15 ? 1 : 0));
@@ -1557,11 +1567,22 @@ function leaveAngry(c, why) {
   const pm = window.__perdas || (window.__perdas = {}), k = why + (c.perfil && c.perfil !== "padrao" ? " [" + c.perfil + "]" : "") + (DIV && usaPrio(c) ? " prio" : ""); pm[k] = (pm[k] || 0) + 1;   // diagnóstico (não é salvo)
   c.path = caminhoIrritado(c); c.state = "angry"; c.wasAngry = true; c.lane = null;
 }
+// 1.9: quem chega ao caixa e vê fila grande pode desistir na hora (devolve as compras ao estoque)
+function desisteDaFila(c) {
+  const lim = lojaGrande() ? FILA_DESISTE - 1 : FILA_DESISTE, q = laneQueue(c.lane).length; if (q < lim) return false;
+  if (Math.random() >= Math.min(0.6, 0.15 * (q - lim + 1))) return false;
+  c.plan.forEach(p => { S.sec[SECTORS[p.sec].id].wh += p.got; p.got = 0; });
+  c.lane = null; leaveAngry(c, "😤 fila enorme");
+  toastOnce("filaDesiste", "Fila grande no caixa: tem cliente largando a cesta e indo embora. Abra mais caixas ou treine os operadores.");
+  return true;
+}
 function nextStep(c) {
   c.step++;
   if (c.step < c.plan.length) { goToShelf(c); return; }
   if (c.plan.some(p => p.got > 0)) {
-    c.lane = DIV ? escolherCaixa(c) : pickLane(); c.qAt = qSeq++; c.state = "toLane";
+    c.lane = DIV ? escolherCaixa(c) : pickLane(); c.qAt = qSeq++;
+    if (desisteDaFila(c)) return;
+    c.state = "toLane";
     c.path = caminhoCaixa(c, c.lane);
   } else { changeRep(0.04, "nada"); leaveAngry(c, "😠 não achei nada"); }
 }
@@ -1900,7 +1921,7 @@ function update(dt) {
   if (truck.state === "away") {
     truck.timer -= dt;
     if (truck.timer <= 0) {
-      if (planOrder().total > 0) truck.state = "arriving";
+      if (caminhaoVale(planOrder())) truck.state = "arriving";
       else { truck.timer = 2; if (whUsed() === 0 && S.money < 1) toastOnce("nocash", "Sem dinheiro para pagar o fornecedor!"); }
     }
   } else if (truck.state === "arriving") {
@@ -1911,7 +1932,9 @@ function update(dt) {
       const order = planOrder(); let paid = 0, n = 0;
       const fa = fornAtivo(), fat = fa ? fatorCaminhao() : 1;   // capítulo 3: reposição de emergência, mais cara; com fornecedores, custo médio por setor
       SECTORS.forEach(d => { const k = order[d.id] || 0; if (k) { if (fa) entrouEstoque(d, k, boxCost(d, S.sec[d.id].priceLvl) * fat); S.sec[d.id].wh += k; paid += fa ? k * boxCost(d, S.sec[d.id].priceLvl) * fat : k * boxCost(d, S.sec[d.id].priceLvl); n += k; } });
-      if (n) { S.money -= paid; S.today.goods += paid; float(P.truckStop.x, 52, `+${n} caixas  -M ${fmt(paid)}`, "#6b4f2f"); }
+      const frete = n ? freteViagem() : 0;          // 1.9: frete por viagem na loja grande do Livre (entra nas mercadorias do dia)
+      if (n) { S.money -= paid + frete; S.today.goods += paid + frete; if (frete) S.today.frete = (S.today.frete || 0) + frete;
+        float(P.truckStop.x, 52, `+${n} caixas  -M ${fmt(paid + frete)}`, "#6b4f2f"); }
       truck.state = "leaving";
     }
   } else if (truck.state === "leaving") {
@@ -2045,6 +2068,13 @@ function update(dt) {
   faseTick(dt);
 }
 
+// 1.9: na loja grande o caminhão só sai com pelo menos meia carga, a não ser que algum setor esteja zerado
+function caminhaoVale(order) {
+  if (!order.total) return false;
+  if (!lojaGrande()) return true;
+  if (order.total >= Math.ceil(truckLoad(S.whLvl) / 2)) return true;
+  return openSectors().some(d => S.sec[d.id].wh === 0);
+}
 function planOrder() {
   const open = openSectors(), order = { total: 0 }, fa = fornAtivo();
   if (fa && !fornEstado().auto) return order;           // capítulo 3: reposição automática desligada pelo jogador
@@ -2236,6 +2266,7 @@ function updateParking(dt) {
     if (!c) { inQ.splice(i, 1); continue; }
     if (c.wait > PK.carWait && !c.stall && gates.in.car !== c.id) {
       inQ.splice(i, 1);
+      if (!vagaLivre() && typeof tentarConvenio === "function" && tentarConvenio(c)) continue;   // 1.9: vaga avulsa
       if (i === 0 && c.y < y.laneIn - 2) { c.state = "pass"; c.path = [{ x: PK.EX, y: y.laneIn }, { x: WORLD.x1 + 60, y: y.laneIn }]; S.today.park.lostFull++; changeRep(-0.02, "estacionamento"); avisoDesistiu(c); }
       else passBy(c, "full");
     }
@@ -2276,6 +2307,7 @@ function updateParking(dt) {
     if (c.state === "approach") {
       if (drive(c, dt, 70)) {
         if (parkPrice() > c.wtp + 1e-9) passBy(c, "price");
+        else if ((inQ.length >= PK.maxQueue || (!vagaLivre() && inQ.length)) && typeof tentarConvenio === "function" && tentarConvenio(c)) { /* 1.9: vaga avulsa */ }
         else if (inQ.length >= PK.maxQueue) passBy(c, "full");
         else { c.fee = parkPrice(); c.state = "queue"; c.wait = 0; inQ.push(c.id); }   // price accepted now is kept for this car
       }
@@ -2338,8 +2370,8 @@ function endDay() {
   const pk = t.park || freshParkDay(), pw = parkWages();
   const net = t.sales + pk.fees + (t.outras || 0) - t.goods - (t.outrasDesp || 0) - b - interest;   // outras: aluguéis, entregas, eventos (capítulos 4+)
   S.avgNet = S.avgNet ? S.avgNet * 0.8 + net * 0.2 : net;
-  S.lastDay = { day: S.day, sales: t.sales, goods: t.goods, bills: b, interest, net, served: t.served, lost: t.lost, rep: S.rep, park: Object.assign({ wages: pw }, pk) };
-  if (t.outras || t.outrasDesp) { S.lastDay.outras = t.outras || 0; S.lastDay.outrasDesp = t.outrasDesp || 0; S.lastDay.linhas = t.linhas || null; }
+  S.lastDay = { day: S.day, sales: t.sales, goods: t.goods, bills: b, interest, net, served: t.served, lost: t.lost, rep: S.rep, frete: t.frete, park: Object.assign({ wages: pw }, pk) };
+  if (t.outras || t.outrasDesp || (t.linhas && t.linhas.length)) { S.lastDay.outras = t.outras || 0; S.lastDay.outrasDesp = t.outrasDesp || 0; S.lastDay.linhas = t.linhas || null; }
   if (t.lost === 0 && t.served > 0) taskProgress("clean", 1);
   if (S.rep >= 4.95) taskProgress("stars", 1);
   banner(`${GANCHOS.nomeDia ? GANCHOS.nomeDia(S.day) : `Dia ${S.day}`}: ${net < 0 ? "-" : "+"}M ${fmt(Math.abs(net))}`, net < 0 ? "#c9513a" : "#2e7a57");
@@ -8197,6 +8229,52 @@ if (KART_ATIVO) {
 <script>
 "use strict";
 // =====================================================================
+// 1.9: vagas avulsas no terreno conveniado (dica de outro programador, aprovada pelo Daniel).
+// O jogador compra vagas uma a uma; o preço sobe com o porte da loja e com cada vaga já comprada.
+// Quando o estacionamento lota (ou a fila da cancela está cheia), o motorista para no terreno
+// conveniado (fora da tela) e os passageiros chegam a pé pela calçada, mesmo com a loja cheia.
+// Cada vaga avulsa atende um carro por vez; a vaga libera quando o último passageiro vai embora.
+// Não vale no shopping (capítulos 7 e 8). Nada muda numa partida que não comprou vagas.
+// =====================================================================
+const AV_CFG = { max: 30, base: 60, passo: 1.12, espera: 2.5 };
+const avPorte = () => MODO === "carreira" ? Math.floor(((typeof FASES !== "undefined" && FASES[FASE] && FASES[FASE].ordem) || 1) / 2) : S.tier;
+const avTem = () => (S.park && S.park.av) || 0;
+const avCusto = () => Math.round(AV_CFG.base * Math.pow(2, avPorte()) * Math.pow(AV_CFG.passo, avTem()));
+const avPodeVender = () => !GANCHOS.simulacao && typeof STALLS !== "undefined" && LOTS.some(L => L.kind === "park");
+const avChegando = [];                      // grupos a caminho: { t, pax, g }
+let avSeq = 1;
+function avEmUso() {
+  const g = new Set(); customers.forEach(c => { if (c.conv && c.state !== "gone") g.add(c.conv); });
+  return g.size + avChegando.length;
+}
+const avLivre = () => avTem() > avEmUso();
+// chamado pelo estacionamento quando o carro desistiria por lotação; devolve true se foi para o convênio
+function tentarConvenio(c) {
+  if (!avTem() || !avLivre()) return false;
+  const y = pkY();
+  c.state = "pass"; c.path = [{ x: c.x + 16, y: y.lanePass }, { x: WORLD.x1 + 60, y: y.lanePass }];
+  float(c.x + 10, c.y - 14, "Convênio 🅿️", "#2a4f7a");
+  avChegando.push({ t: AV_CFG.espera, pax: Math.random() < 0.35 ? 2 : 1, g: avSeq++ });
+  S.today.park.conv = (S.today.park.conv || 0) + 1;
+  return true;
+}
+function avTick(dt) {
+  for (let i = avChegando.length - 1; i >= 0; i--) {
+    const a = avChegando[i]; a.t -= dt; if (a.t > 0) continue;
+    avChegando.splice(i, 1);
+    for (let k = 0; k < a.pax; k++) {
+      const n0 = customers.length;
+      entradaForcada = true; try { spawnCustomer(null); } finally { entradaForcada = false; }
+      if (customers.length > n0) customers[customers.length - 1].conv = a.g;
+    }
+  }
+}
+gancho("tick", dt => { if (avChegando.length) avTick(dt); });
+function comprarVagaAvulsa() { S.park.av = avTem() + 1; banner(`🅿️ Vaga avulsa nº ${S.park.av} no convênio`, "#2a4f7a"); }
+</script>
+<script>
+"use strict";
+// =====================================================================
 // Drawing
 // =====================================================================
 const cv = document.getElementById("c"), ctx = cv.getContext("2d");
@@ -9772,7 +9850,7 @@ function tapAt(sx, sy) {
 // =====================================================================
 // Actions (shared by the panel and by automated balance tests)
 // =====================================================================
-const UPGRADE_KINDS = new Set(["shelf", "price", "hire", "train", "cashhire", "cashtrain", "storage", "ads", "gear", "mgr", "parkhire", "parktrain", "parksign"]);
+const UPGRADE_KINDS = new Set(["shelf", "price", "hire", "train", "cashhire", "cashtrain", "storage", "ads", "gear", "mgr", "parkhire", "parktrain", "parksign", "parkav"]);
 function actions() {
   const list = [], gr = S.gear;
   SECTORS.forEach((d, i) => {
@@ -9805,7 +9883,7 @@ function actions() {
     cost: Math.ceil(80 * Math.pow(3, S.cashiers - 1)), maxed: S.cashiers >= maxC, run: () => S.cashiers++ });
   list.push({ key: "cashtrain", kind: "cashtrain", title: `Treinar operadores (nv ${S.cashLvl})`, info: `${cashTime(S.cashLvl).toFixed(2)}s → ${cashTime(S.cashLvl + 1).toFixed(2)}s por item`,
     cost: Math.ceil(10 * Math.pow(G, S.cashLvl)), run: () => S.cashLvl++ });
-  list.push({ key: "storage", kind: "storage", title: `Depósito (nv ${S.whLvl})`, info: `Cabe ${whCap(S.whLvl)} → ${whCap(S.whLvl + 1)}, caminhão traz ${truckLoad(S.whLvl)} → ${truckLoad(S.whLvl + 1)}`,
+  list.push({ key: "storage", kind: "storage", title: `Depósito (nv ${S.whLvl})`, info: `Cabe ${whCap(S.whLvl)} → ${whCap(S.whLvl + 1)}, caminhão traz ${truckLoad(S.whLvl)} → ${truckLoad(S.whLvl + 1)}${lojaGrande() ? ` a cada ${truckEvery()} s (frete M ${fmt(freteViagem())} por viagem)` : ""}`,
     cost: Math.ceil(15 * Math.pow(G, S.whLvl)), run: () => S.whLvl++ });
   list.push({ key: "ads", kind: "ads", title: `Panfletos (nv ${S.adsLvl})`, info: `Mais gente do bairro vem comprar`,
     cost: Math.ceil(15 * Math.pow(G, S.adsLvl)), run: () => S.adsLvl++ });
@@ -9840,6 +9918,9 @@ function actions() {
     cost: Math.ceil(25 * Math.pow(1.45, pk.train)), locked: !pk.staff, lockText: "Sem atendente", maxed: parkTrain() <= 0.35 + 1e-9, run: () => pk.train++ });
   list.push({ key: "parksign", kind: "parksign", title: `Placas na rua (nv ${pk.sign})`, info: `Mais motoristas param: +${12 * (pk.sign + 1)}% de procura (hoje +${12 * pk.sign}%)`,
     cost: Math.ceil(40 * Math.pow(1.6, pk.sign)), maxed: pk.sign >= 5, run: () => pk.sign++ });
+  if (typeof avPodeVender === "function" && avPodeVender()) list.push({ key: "parkav", kind: "parkav", title: `Vagas avulsas no convênio (${avTem()})`,
+    info: avTem() >= AV_CFG.max ? `Todas as ${AV_CFG.max} vagas do convênio já são suas` : `+1 vaga: com o estacionamento lotado, o motorista para no terreno conveniado e vem a pé. Fica mais cara a cada vaga e com o porte da loja`,
+    cost: avCusto(), maxed: avTem() >= AV_CFG.max, run: comprarVagaAvulsa });
   PINTRO.forEach(t => { if (pk.intro[t.id]) return; list.push({ key: `pintro:${t.id}`, kind: "claim", title: t.label, info: `Prêmio M ${fmt(t.reward)}`, cost: 0, locked: !t.ok(), lockText: "A fazer",
     run: () => { pk.intro[t.id] = true; S.money += t.reward; banner(`🅿️ +M ${fmt(t.reward)}`, "#2a4f7a"); } }); });
   ACH.forEach(a => { if (S.ach[a.id]) return; list.push({ key: `ach:${a.id}`, kind: "claim", title: a.label, info: `Prêmio M ${fmt(achReward(a))}`, cost: 0, locked: !a.ok(), lockText: "Em andamento",
@@ -10236,11 +10317,11 @@ function buildBuilding(body, acts) {
     const td = el("div", "card", `<h3>Hoje no estacionamento</h3><table class="rep">
       <tr><td>Receita das vagas</td><td class="pos" id="pkFees"></td></tr><tr><td>Salários (pagos no fim do dia)</td><td class="neg" id="pkWages"></td></tr>
       <tr><td><b>Lucro do estacionamento</b></td><td id="pkNet"></td></tr><tr><td>Carros atendidos</td><td id="pkCars"></td></tr>
-      <tr><td>Perdidos por lotação</td><td id="pkFull"></td></tr><tr><td>Perdidos pelo preço</td><td id="pkLostP"></td></tr></table>`);
+      <tr><td>Perdidos por lotação</td><td id="pkFull"></td></tr><tr><td>Foram para o convênio</td><td id="pkConv"></td></tr><tr><td>Perdidos pelo preço</td><td id="pkLostP"></td></tr></table>`);
     live(() => { const d = S.today.park, w = parkWages(), n = d.fees - w, q = id => td.querySelector(id);
       q("#pkFees").textContent = `+M ${fmt(d.fees)}`; q("#pkWages").textContent = `-M ${fmt(w)}`;
       q("#pkNet").textContent = `${n < 0 ? "-" : "+"}M ${fmt(Math.abs(n))}`; q("#pkNet").className = n < 0 ? "neg" : "pos";
-      q("#pkCars").textContent = d.cars; q("#pkFull").textContent = d.lostFull; q("#pkLostP").textContent = d.lostPrice; });
+      q("#pkCars").textContent = d.cars; q("#pkFull").textContent = d.lostFull; q("#pkConv").textContent = d.conv || 0; q("#pkLostP").textContent = d.lostPrice; });
     body.appendChild(td);
     if (CANCELA) {
     // staff
@@ -10259,7 +10340,7 @@ function buildBuilding(body, acts) {
     body.appendChild(fire);
     }
     body.appendChild(el("div", "sec-title", "Melhorias"));
-    body.appendChild(actsBox(acts, ["parksign"]));
+    body.appendChild(actsBox(acts, ["parksign", "parkav"]));
     body.appendChild(el("div", "sec-title", "Terrenos do estacionamento"));
     LOTS.filter(L => L.kind === "park").forEach(L => body.appendChild(lotRow(L, null)));
   } else if (sel.kind === "lot") {
@@ -10399,8 +10480,8 @@ function buildTasks(body, acts) {
   if (S.lastDay) {
     const L = S.lastDay, sg = v => `${v < 0 ? "-" : "+"}M ${fmt(Math.abs(v))}`;
     body.appendChild(el("div", "card", `<h3>Relatório do dia ${L.day}</h3><div class="note">${L.served} clientes atendidos, ${L.lost} perdidos</div>
-      <table class="rep"><tr><td>Vendas do mercado</td><td class="pos">${sg(L.sales)}</td></tr>${L.park ? `<tr><td>Estacionamento (${L.park.cars} carros)</td><td class="pos">${sg(L.park.fees)}</td></tr>` : ""}<tr><td>Mercadoria</td><td class="neg">${sg(-L.goods)}</td></tr>
-      <tr><td>Aluguel e salários do mercado</td><td class="neg">${sg(-(L.bills - (L.park ? L.park.wages : 0)))}</td></tr>${L.park && L.park.wages ? `<tr><td>Salários do estacionamento</td><td class="neg">${sg(-L.park.wages)}</td></tr>` : ""}${L.interest ? `<tr><td>Juros do banco</td><td class="neg">${sg(-L.interest)}</td></tr>` : ""}
+      <table class="rep"><tr><td>Vendas do mercado</td><td class="pos">${sg(L.sales)}</td></tr>${L.park ? `<tr><td>Estacionamento (${L.park.cars} carros)</td><td class="pos">${sg(L.park.fees)}</td></tr>` : ""}<tr><td>Mercadoria${L.frete ? ` (com M ${fmt(L.frete)} de frete)` : ""}</td><td class="neg">${sg(-L.goods)}</td></tr>
+      <tr><td>Aluguel e salários do mercado</td><td class="neg">${sg(-(L.bills - (L.park ? L.park.wages : 0)))}</td></tr>${L.park && L.park.wages ? `<tr><td>Salários do estacionamento</td><td class="neg">${sg(-L.park.wages)}</td></tr>` : ""}${L.interest ? `<tr><td>Juros do banco</td><td class="neg">${sg(-L.interest)}</td></tr>` : ""}${(L.linhas || []).map(l => `<tr><td>${l[0]}</td><td>${l[1]}</td></tr>`).join("")}
       <tr><td><b>Lucro</b></td><td class="${L.net < 0 ? "neg" : "pos"}"><b>${sg(L.net)}</b></td></tr>${L.entregasES ? `<tr><td>Entregas, fora do lucro (${L.entregasES.entregues} entregues, ${L.entregasES.noPrazo} no prazo)</td><td class="${L.entregasES.receita - L.entregasES.salarios < 0 ? "neg" : "pos"}">${sg(L.entregasES.receita - L.entregasES.salarios)}</td></tr>` : ""}</table>`));
   }
 }
@@ -10985,7 +11066,7 @@ function resumoOperacao(t, o) {
 //   · Painel de trapaças (modo desenvolvedor): 7 toques na versão nas Configurações + código.
 //     Todo uso fica marcado no save (S.trapacas / CARREIRA.trapacas).
 // =====================================================================
-const APP_VERSAO = "1.8.3";
+const APP_VERSAO = "1.9";
 const SITE_JOGO = "https://danielcamposdasilva-tech.github.io/mercadinho/";
 const WHATS_SUPORTE = "5521988612660";
 const DEV_HASH = 1898547767;                  // código do modo desenvolvedor (só o hash fica no jogo)
@@ -11185,6 +11266,11 @@ const crUnid = (n = 1) => CR_SEMANA() ? (n === 1 ? "semana" : "semanas") : (n ==
 const crObraAntes = () => NA_CARREIRA && FASE === "grande" && typeof ob === "function" && S.obra && S.obra.fase !== "operacao";
 function limiteCredito() {
   if (S.credito) return 0;
+  return limiteBase();
+}
+// 1.9: o teto de 4× o piso do porte saiu (no Hipermercado do Livre o limite parava em M 14 mil mesmo com lucro de dezenas
+// de milhares por dia); agora o limite é cerca de 10 fechamentos do lucro médio, nunca abaixo do piso do porte
+function limiteBase() {
   if (crObraAntes()) {
     if (!(typeof licOk === "function" && licOk("instalacao"))) return 0;
     const L = typeof lojasSh === "function" ? lojasSh() : null, alug = L ? ocupadas(L).reduce((a, u) => a + u.ocup.aluguel, 0) : 0;
@@ -11192,7 +11278,7 @@ function limiteCredito() {
   }
   const ordem = NA_CARREIRA && typeof FASES !== "undefined" && FASES[FASE] ? FASES[FASE].ordem : Math.min(7, S.tier || 0);
   const piso = CR_CFG.pisos[Math.max(0, Math.min(7, ordem | 0))];
-  return Math.round(Math.min(piso * 4, Math.max(piso, Math.max(0, S.avgNet || 0) * 10)) / 100) * 100;
+  return Math.round(Math.max(piso, Math.max(0, S.avgNet || 0) * 10) / 100) * 100;
 }
 const motivoSemCredito = () => S.credito ? "Já existe um contrato: quite este antes de pedir outro." : crObraAntes() && !licOk("instalacao") ? "Na obra, o crédito abre depois da licença de instalação." : "";
 function simularCredito(valor) {
@@ -11269,7 +11355,7 @@ const brutoHoje = () => { const t = S.today; return (t.sales || 0) + (t.outras |
   };
 }
 // ---------- painel ----------
-function buildCredito(body) {
+function buildBanco(body) {
   const c = S.credito;
   head("🏦", "#e3eef7", CR_CFG.nome, c ? `Contrato ativo: faltam M ${fmt(Math.round(c.principalRest + c.jurosRest))}` : `Limite agora: M ${fmt(limiteCredito())}`);
   body.appendChild(el("p", "note", `Crédito opcional, para investir com planejamento. Juros fixos de ${Math.round(CR_CFG.juros * 100)}% no total, ${CR_CFG.parcelas} parcelas (uma por ${crUnid()}), sem multa. A parcela nunca passa de ${Math.round(CR_CFG.tetoReceita * 100)}% da receita do fechamento nem deixa o saldo negativo: se faltar, o prazo se alonga. Ficar no vermelho continua custando ${Math.round(DEBT_INTEREST * 100)}% por fechamento.`));
@@ -11290,11 +11376,12 @@ function buildCredito(body) {
     b.onclick = () => contratarCredito(v); card.appendChild(b); body.appendChild(card); });
   if (S.creditoHist && S.creditoHist.length) body.appendChild(el("p", "note", `Contratos anteriores: ${S.creditoHist.map(h => `M ${fmt(h.valor)} (${h.como})`).join(", ")}.`));
 }
+function buildCredito(body) { buildBanco(body); if (typeof buildAgiota === "function") buildAgiota(body); }
 PAINEIS.credito = buildCredito;
 const crSub = () => S.credito ? `Contrato ativo · faltam M ${fmt(Math.round(S.credito.principalRest + S.credito.jurosRest))}` : limiteCredito() ? `Limite M ${fmt(limiteCredito())}` : (motivoSemCredito() || "Sem limite agora");
 { const bu0 = buildUpgrade;
   buildUpgrade = (body, acts) => { bu0(body, acts);
-    const r = el("button", "row", `<div class="ic" style="background:#e3eef7">🏦</div><div><div class="t">Crédito (opcional)</div><div class="s"></div></div><div class="go">Ver</div>`);
+    const r = el("button", "row", `<div class="ic" style="background:#e3eef7">🏦</div><div><div class="t">Crédito: banco e agiota (opcional)</div><div class="s"></div></div><div class="go">Ver</div>`);
     const s = r.querySelector(".s"); live(() => { s.textContent = crSub(); }); r.onclick = () => openSheet("credito"); body.appendChild(r); };
 }
 { const bl0 = buildLista;
@@ -11580,7 +11667,8 @@ const REP_CAUSAS = {
   nada: { nome: "Clientes saíram sem achar nada", dica: "Gôndolas vazias: reponha (repositores, depósito, pedidos) e abra mais setores." },
   cesta: { nome: "Clientes saíram por falta de cesta ou carrinho", dica: "Compre mais cestas e carrinhos, contrate carrinheiros ou toque nas cestas acumuladas no caixa." },
   irritado: { nome: "Clientes saíram irritados", dica: "Veja o relatório do dia para saber onde a loja travou." },
-  estacionamento: { nome: "Carros desistiram do estacionamento", dica: "Compre mais vagas; se houver vagas livres e fila na cancela, contrate ou treine atendentes." },
+  estacionamento: { nome: "Carros desistiram do estacionamento", dica: "Compre mais vagas (ou vagas avulsas no convênio); se houver vagas livres e fila na cancela, contrate ou treine atendentes." },
+  agiota: { nome: "Cobradores do agiota na porta", dica: "Pague a dívida em Banco e agiota." },
   lotacao: { nome: "Visitantes recusados por lotação", dica: "Aumente a capacidade com limpeza e segurança." },
   entregaCancelada: { nome: "Entregas canceladas", dica: "Aceite só o que o estoque e os motoboys dão conta; ajuste capacidade e raio." },
   entregaAtrasada: { nome: "Entregas atrasadas", dica: "Mais motoboys, separação no turno e raio menor." },
@@ -12084,6 +12172,121 @@ if (MODO_TUT) {
 <script>
 "use strict";
 // =====================================================================
+// 1.9: agiota (dica de outro programador, aprovada pelo Daniel). Personagem fictício, sem ligação com pessoas reais.
+// Empresta bem mais que o banco, sem parcela fixa: a dívida cresce 8% a cada fechamento jogado e vence em 12.
+// Vencida: 15% por fechamento, a reputação cai e, em cada fechamento, ele leva o dinheiro do caixa; sem dinheiro,
+// leva um nível de alguma melhoria (abatendo o valor dela da dívida). Pode quebrar a loja, mas nunca acaba o jogo:
+// a dívida some quando é paga ou quando ele já levou o bastante.
+// Só conta fechamentos jogados (o tempo com o app fechado não corre para ele). Fora do shopping e da obra do cap. 8.
+// O dinheiro recebido não é lucro; os juros pagos entram como despesa no dia em que são pagos.
+// Nada muda numa partida que nunca pegou dinheiro com ele: S.agiota só existe depois do acordo.
+// =====================================================================
+const AG_CFG = { nome: "Seu Bira, o agiota", juros: 0.08, jurosAtraso: 0.15, prazo: 12, mult: 3, minimo: 5000, rep: 0.25 };
+const agPode = () => !GANCHOS.simulacao && !crObraAntes();
+const agLimite = () => S.agiota || !agPode() ? 0 : Math.round(Math.max(AG_CFG.minimo, AG_CFG.mult * limiteBase()) / 100) * 100;
+const agVencido = () => !!S.agiota && S.day >= S.agiota.vence;
+const agFech = n => n === 1 ? "fechamento" : "fechamentos";
+function agContratar(valor) {
+  const lim = agLimite(); valor = Math.round(valor);
+  if (!lim || valor <= 0 || valor > lim) { toast(S.agiota ? "Você ainda deve ao agiota." : "Valor acima do que ele empresta."); return false; }
+  S.agiota = { valor, divida: valor, principal: valor, inicio: S.day, vence: S.day + AG_CFG.prazo, atrasos: 0, levou: 0 };
+  S.money += valor;
+  S.today.linhas = (S.today.linhas || []).concat([[`${AG_CFG.nome}: dinheiro recebido (fora do resultado)`, `+M ${fmt(valor)}`]]);
+  banner(`💼 M ${fmt(valor)} do agiota`, "#6b3f2f");
+  anunciar(`Você pegou M ${fmt(valor)} com o agiota. A dívida cresce ${Math.round(AG_CFG.juros * 100)}% por fechamento e vence em ${AG_CFG.prazo}.`);
+  if (typeof regDiag === "function") regDiag("agiota", { acao: "pegou", valor });
+  save(); lastSig = ""; renderSheet(); return true;
+}
+// paga até `quanto`; o que passa do principal restante conta como juros (despesa do dia)
+function agPagar(quanto) {
+  const a = S.agiota; if (!a) return false;
+  const v = Math.round(Math.min(a.divida, quanto, Math.max(0, S.money)) * 100) / 100;
+  if (v <= 0) { toast("Sem dinheiro no caixa para pagar o agiota."); return false; }
+  const jur = Math.max(0, v - a.principal); a.principal = Math.max(0, a.principal - v); a.divida -= v; S.money -= v;
+  S.today.outrasDesp = (S.today.outrasDesp || 0) + jur;
+  S.today.linhas = (S.today.linhas || []).concat([[`${AG_CFG.nome}: pagamento${jur ? ` (juros M ${fmt(jur)})` : ""}`, `-M ${fmt(v)}`]]);
+  if (a.divida < 0.5) agEncerrar("pago"); else toast(`Pago M ${fmt(v)}. Ainda faltam M ${fmt(Math.round(a.divida))}.`);
+  save(); lastSig = ""; renderSheet(); return true;
+}
+function agEncerrar(como) {
+  const a = S.agiota;
+  S.agiotaHist = (S.agiotaHist || []).concat([{ valor: a.valor, inicio: a.inicio, fim: S.day, como, levou: Math.round(a.levou) }]).slice(-5);
+  if (typeof regDiag === "function") regDiag("agiota", { acao: como, valor: a.valor, levou: Math.round(a.levou) });
+  delete S.agiota;
+  banner(como === "pago" ? "💼 Dívida com o agiota paga" : "💼 O agiota deu a dívida por encerrada", "#2e7a57");
+}
+// melhorias que ele pode levar (um nível de cada vez, a mais valiosa primeiro); o custo do nível perdido abate a dívida
+function agBens() {
+  const b = [];
+  if (S.whLvl > 0) b.push({ n: "um nível do depósito", v: Math.ceil(15 * Math.pow(G, S.whLvl - 1)), f: () => S.whLvl-- });
+  if (S.adsLvl > 0) b.push({ n: "um nível dos panfletos", v: Math.ceil(15 * Math.pow(G, S.adsLvl - 1)), f: () => S.adsLvl-- });
+  openSectors().forEach(d => { const st = S.sec[d.id];
+    if (st.priceLvl > 0) b.push({ n: `um nível da qualidade de ${d.name}`, v: Math.ceil(d.base * 2 * Math.pow(1.45, st.priceLvl - 1)), f: () => st.priceLvl-- });
+    if (st.shelfLvl > 0) b.push({ n: `um nível da prateleira de ${d.name}`, v: Math.ceil(d.base * Math.pow(G, st.shelfLvl - 1)), f: () => { st.shelfLvl--; st.shelf = Math.min(st.shelf, shelfCap(st.shelfLvl)); } }); });
+  return b.sort((x, y) => y.v - x.v);
+}
+function agCobrarVencido() {
+  const a = S.agiota, L = [];
+  a.atrasos++; a.divida *= 1 + AG_CFG.jurosAtraso; changeRep(-AG_CFG.rep, "agiota");
+  L.push([`${AG_CFG.nome}: dívida vencida (${a.atrasos}º ${agFech(1)} de atraso, +${Math.round(AG_CFG.jurosAtraso * 100)}%)`, `M ${fmt(Math.round(a.divida))}`]);
+  const caixa = Math.min(a.divida, Math.max(0, S.money));
+  if (caixa > 0) {
+    const jur = Math.max(0, caixa - a.principal); a.principal = Math.max(0, a.principal - caixa); a.divida -= caixa; a.levou += caixa; S.money -= caixa;
+    S.today.outrasDesp = (S.today.outrasDesp || 0) + jur; L.push([`${AG_CFG.nome} levou o dinheiro do caixa`, `-M ${fmt(caixa)}`]);
+  }
+  if (a.divida >= 0.5 && S.money <= 0) {
+    const b = agBens()[0];
+    if (b) { b.f(); const ab = Math.min(a.divida, b.v); a.divida -= ab; a.principal = Math.max(0, a.principal - ab); a.levou += ab;
+      L.push([`${AG_CFG.nome} levou ${b.n} (abateu M ${fmt(ab)})`, "M 0"]); }
+    else a.divida = 0;               // não há mais nada para levar: ele desiste do resto
+  }
+  toastOnce("agiotaVenceu", "O agiota está cobrando: a reputação cai e ele leva o caixa e, sem dinheiro, as suas melhorias. Pague em Crédito: banco e agiota.");
+  return L;
+}
+{ const endDay0 = endDay;
+  endDay = function () {
+<script>if("serviceWorker" in navigator&&location.protocol==="https:"){addEventListener("load",function(){navigator.serviceWorker.register("sw.js").catch(function(){})})}</script>
+    const a = S.agiota;
+    if (a && agPode()) {
+      let L;
+      if (S.day >= a.vence) L = agCobrarVencido();
+      else {
+        a.divida *= 1 + AG_CFG.juros; const f = a.vence - S.day - 1;
+        L = [[`${AG_CFG.nome}: dívida +${Math.round(AG_CFG.juros * 100)}% (${f > 0 ? `vence em ${f} ${agFech(f)}` : "vence no próximo fechamento"})`, `M ${fmt(Math.round(a.divida))}`]];
+        if (f <= 2) toastOnce("agiotaPerto" + a.vence, f > 0 ? `Faltam ${f} ${agFech(f)} para vencer a dívida com o agiota.` : "A dívida com o agiota vence no próximo fechamento.");
+      }
+      S.today.linhas = (S.today.linhas || []).concat(L);
+    }
+    endDay0();
+    if (S.agiota && S.agiota.divida < 0.5) { agEncerrar(S.agiota.atrasos ? "levou" : "pago"); save(); }
+  };
+}
+function buildAgiota(body) {
+  if (!agPode() && !S.agiota) return;
+  body.appendChild(el("div", "sec-title", "💼 Agiota"));
+  body.appendChild(el("p", "note", `${AG_CFG.nome} empresta muito mais que o banco e não pede parcela: a dívida cresce ${Math.round(AG_CFG.juros * 100)}% a cada fechamento e vence em ${AG_CFG.prazo}. Vencida, cresce ${Math.round(AG_CFG.jurosAtraso * 100)}% por fechamento, a reputação cai e ele leva o dinheiro do caixa; sem dinheiro, leva suas melhorias. Ele só conta os dias que você joga.`));
+  const a = S.agiota;
+  if (a) {
+    const f = a.vence - S.day;
+    const venc = agVencido() ? `<b style="color:#c9513a">vencida há ${a.atrasos} ${agFech(a.atrasos)}</b>` : `vence em ${f} ${agFech(f)}`;
+    body.appendChild(el("div", "card", `<h3>Dívida com o agiota</h3><table><tr><td>Recebido</td><td>M ${fmt(a.valor)}</td></tr><tr><td>Situação</td><td>${venc}</td></tr>${a.levou ? `<tr><td>Ele já levou</td><td>M ${fmt(Math.round(a.levou))}</td></tr>` : ""}<tr><td><b>Deve agora</b></td><td><b>M ${fmt(Math.round(a.divida))}</b></td></tr></table>`));
+    const tudo = Math.round(a.divida), b1 = el("button", "btn", S.money >= tudo ? `Pagar tudo (M ${fmt(tudo)})` : `Pagar o que tenho (M ${fmt(Math.max(0, Math.floor(S.money)))})`);
+    b1.setAttribute("aria-label", `Pagar o agiota: a dívida é de M ${fmt(tudo)}`); b1.onclick = () => agPagar(a.divida); body.appendChild(b1);
+    return;
+  }
+  const lim = agLimite(); if (!lim) return;
+  [0.25, 0.5, 1].forEach(fr => {
+    const v = Math.max(100, Math.round(lim * fr / 100) * 100), venc = Math.round(v * Math.pow(1 + AG_CFG.juros, AG_CFG.prazo));
+    const card = el("div", "card", `<div class="req"><span><b>M ${fmt(v)}</b></span><b>vira M ${fmt(venc)}</b></div><p class="note">Se pagar só no vencimento (${AG_CFG.prazo} fechamentos), devolve M ${fmt(venc)}. Pode pagar antes, a qualquer hora.</p>`);
+    const b = el("button", "btn mini", `Pegar M ${fmt(v)}`); b.setAttribute("aria-label", `Pegar M ${fmt(v)} com o agiota; em ${AG_CFG.prazo} fechamentos a dívida vira M ${fmt(venc)}`);
+    b.onclick = () => agContratar(v); card.appendChild(b); body.appendChild(card);
+  });
+  if (S.agiotaHist && S.agiotaHist.length) body.appendChild(el("p", "note", `Acordos anteriores: ${S.agiotaHist.map(h => `M ${fmt(h.valor)} (${h.como === "pago" ? "pago" : "cobrado à força"})`).join(", ")}.`));
+}
+</script>
+<script>
+"use strict";
+// =====================================================================
 // HUD
 // =====================================================================
 function fmt(v) {
@@ -12245,6 +12448,5 @@ window.__game = { get S() { return S; }, update, customers, workers, pending, st
   pcars, inQ, gates, LOTS, building, get STALLS() { return STALLS; }, setParkPrice, gateTime, parkWages, carRate, exitX, pkY, acceptShare, migrate, endDay, flyTo, camLimits,
   get MODO() { return MODO; }, filaOrdenada: l => laneQueue(l), verificarCirculacao, escolherCaixa, get FASES() { return FASES; }, proximaDisponivel, trocarLoja, abrirMapa, fazerPedido, cancelarPedido, repassar, oferta, motivoRecusa, reservado, livreDeposito, fornEstado, tAbs, registroLoja, alternarAuto, acess: () => acess(), PERFIS, caixaPrio: () => caixaPrio(), collectors, lanes, posFila, PREFS, get FASE() { return FASE; }, get CARREIRA() { return CARREIRA; }, faseReqs, faseCompleta, assumirProxima, iniciarPromo, promoAtiva, get SCENE() { return SCENE; }, get W() { return W; }, P, STATION_: () => STATION, corredorPara, routeTo, voltarAoMenu, entrarModo };
 </script>
-<script>if("serviceWorker" in navigator&&location.protocol==="https:"){addEventListener("load",function(){navigator.serviceWorker.register("sw.js").catch(function(){})})}</script>
 </body>
 </html>
