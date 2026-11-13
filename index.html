@@ -11417,6 +11417,7 @@ const CHAVE_DIAG = "mercadinho-diag";
 const DIAG_MAX = 200, DIAG_LOTE = 50;
 const rndId = (n = 10) => { const a = new Uint8Array(n); try { crypto.getRandomValues(a); } catch (e) { for (let i = 0; i < n; i++) a[i] = (Date.now() * (i + 7)) & 255; } return [...a].map(b => "abcdefghijkmnpqrstuvwxyz23456789"[b % 32]).join(""); };
 let DG = null;
+function faixaPermiteDiag(faixa) { return faixa === "12a17" || faixa === "18mais"; }
 function dg() {
   if (DG) return DG;
   try { DG = JSON.parse(localStorage.getItem(CHAVE_DIAG) || "null"); } catch (e) { DG = null; }
@@ -11424,6 +11425,7 @@ function dg() {
   DG = Object.assign({ id: rndId(8), ligado: true, avisado: false, fila: [], url: "", iniciados: [], hb: 0, limpo: true, escolha: null, faixa: null }, DG || {});
   if (DG.faixa === "menor12") DG.escolha = "nao";                                                       // menores de 12: nunca envia (LGPD, Art. 14, § 1º)
   if (antigo && !("escolha" in antigo)) { DG.escolha = antigo.ligado === false ? "nao" : null; DG.avisado = false; }   // save de antes da 1.9: pergunta de novo
+  if (DG.escolha === "sim" && !faixaPermiteDiag(DG.faixa)) DG.escolha = null;
   DG.ligado = DG.escolha !== "nao";
   return DG;
 }
@@ -11454,7 +11456,7 @@ function regErro(msg, onde, pilha) {
 }
 let enviando = false;
 function enviarDiag(saindo) {
-  const d = dg(), url = urlDiag(); if (d.escolha !== "sim" || !url || !d.fila.length || enviando) return;
+  const d = dg(), url = urlDiag(); if (!faixaPermiteDiag(d.faixa) || d.escolha !== "sim" || !url || !d.fila.length || enviando) return;
   if (navigator.onLine === false) return;
   const lote = d.fila.slice(0, DIAG_LOTE), corpo = JSON.stringify({ inst: d.id, eventos: lote }), ids = new Set(lote.map(e => e.i));
   const tirar = () => { d.fila = d.fila.filter(e => !ids.has(e.i)); gravarDg(); };
@@ -11463,12 +11465,18 @@ function enviarDiag(saindo) {
   fetch(url, { method: "POST", mode: "no-cors", body: corpo, headers: { "Content-Type": "text/plain" } }).then(() => { tirar(); enviando = false; if (d.fila.length) setTimeout(enviarDiag, 3000); }).catch(() => { enviando = false; });
 }
 function escolherDiag(sim) {
-  const d = dg(); if (sim && d.faixa === "menor12") return;
+  const d = dg(); if (sim && !faixaPermiteDiag(d.faixa)) return;
   d.escolha = sim ? "sim" : "nao"; d.ligado = sim; d.avisado = true; if (!sim) d.fila = []; gravarDg();
   if (sim) setTimeout(() => { configDiag(); enviarDiag(); }, 500);
 }
 function alternarDiag() {
   if (dg().faixa === "menor12") { avisoMenor12(); return; }
+  if (!faixaPermiteDiag(dg().faixa)) {
+    closeSheet();
+    showModal('<h2>Dados de diagnóstico</h2><div id="dgEscolhaConfig"></div><button id="dgVoltar" class="plain">Fechar</button>');
+    document.getElementById("dgVoltar").onclick = hideModal;
+    avisoDiag(document.getElementById("dgEscolhaConfig")); return;
+  }
   const sim = dg().escolha !== "sim"; escolherDiag(sim);
   toast(sim ? "Envio de dados de diagnóstico ligado." : "Envio desligado. A fila que não tinha sido enviada foi apagada."); lastSig = ""; renderSheet();
 }
@@ -11486,7 +11494,22 @@ function pedirExclusaoDiag() {
   document.getElementById("exEnviar").onclick = () => { abrirExterno(`https://wa.me/${WHATS_SUPORTE}?text=${encodeURIComponent(txt)}`); hideModal(); };
   document.getElementById("exFechar").onclick = hideModal;
 }
-function trocarIdDiag() { const d = dg(); d.id = rndId(8); d.fila = []; gravarDg(); toast(`Novo identificador: ${d.id}`); lastSig = ""; renderSheet(); }
+function trocarIdDiag() {
+  const d = dg();
+  closeSheet();
+  showModal(`<h2>Trocar identificador?</h2>
+    <p>Guarde o código atual se quiser pedir a exclusão dos registros anteriores. A troca descarta a fila local e os registros já enviados continuam vinculados ao código antigo.</p>
+    <p>Código atual: <input id="idAnterior" readonly aria-label="Código atual"></p>
+    <button class="plain" id="idExcluir">Pedir exclusão agora</button>
+    <div class="linha2"><button class="plain" id="idCancelar">Cancelar</button><button class="btn" id="idTrocar">Trocar código</button></div>`);
+  const campo = document.getElementById("idAnterior");
+  campo.value = d.id; campo.onclick = () => campo.select();
+  document.getElementById("idExcluir").onclick = pedirExclusaoDiag;
+  document.getElementById("idCancelar").onclick = hideModal;
+  document.getElementById("idTrocar").onclick = () => {
+    d.id = rndId(8); d.fila = []; gravarDg(); hideModal(); toast(`Novo identificador: ${d.id}`);
+  };
+}
 // endereço da planilha pode chegar pelo versao.json do site (sem precisar de APK novo)
 function configDiag() {
   if (MODO === "previa") return;
@@ -11550,30 +11573,32 @@ if (typeof aplicarResgate === "function") { const a0 = aplicarResgate; aplicarRe
 // ---------- aviso da primeira abertura e controle nas Configurações ----------
 // 1.9: primeiro a faixa de idade (sem resposta marcada); menores de 12 não recebem a pergunta e nada é enviado.
 // Depois, para 12 anos ou mais, a pergunta do diagnóstico com as duas respostas do mesmo tamanho.
-function avisoDiag() {                // na tela inicial (não cobre o cenário do jogo); volta até a pessoa responder
-  const d = dg(), box = document.querySelector("#menu .menu-box"); if (d.escolha !== null || !box || document.getElementById("avisoDiag")) return;
-  const b = document.createElement("div"); b.id = "avisoDiag"; b.setAttribute("role", "region"); b.setAttribute("aria-label", "Dados de diagnóstico"); b.className = "menu-nota";
+function avisoDiag(destino) {                // na tela inicial (não cobre o cenário do jogo); volta até a pessoa responder
+  const d = dg(), box = destino || document.querySelector("#menu .menu-box");
+  if (!box || (!destino && d.escolha !== null) || box.querySelector(".perguntaDiag")) return;
+  const b = document.createElement("div"); b.id = destino ? "avisoDiagConfig" : "avisoDiag"; b.setAttribute("role", "region"); b.setAttribute("aria-label", "Dados de diagnóstico"); b.className = "menu-nota perguntaDiag";
   b.style.cssText = "background:#1f3a2d;color:#eef4ef;border-radius:12px;padding:10px 12px;text-align:left;margin-top:10px";
   box.appendChild(b);
+  const fechar = () => { b.remove(); document.getElementById("avisoDiag")?.remove(); if (destino) hideModal(); };
   const pol = `<a href="#" class="dgPol" style="color:inherit">Política de privacidade</a>`;
   const ligarPol = () => b.querySelectorAll(".dgPol").forEach(a => { a.onclick = e => { e.preventDefault(); abrirPrivacidade(); }; });
   const perguntarDiag = () => {
-    b.innerHTML = `<b>Ajudar a melhorar o jogo?</b> Se você deixar, enviamos erros, travamentos, tempo de jogo e o resumo de cada dia (capítulo, saldo, atendimentos). Isso mostra onde o jogo trava ou fica difícil demais. Vai com um código aleatório, sem nome nem contato. Você joga igual com qualquer resposta.${d.faixa === "12a17" ? " Se quiser, decida junto com um adulto responsável." : ""}
+    b.innerHTML = `<b>Ajudar a melhorar o jogo?</b> Se você deixar, enviamos erros, travamentos, tempo de jogo e o resumo de cada dia (capítulo, saldo, atendimentos). Isso mostra onde o jogo trava ou fica difícil demais. Vai com um código aleatório, sem nome nem contato. Ao aceitar, também enviamos os eventos já guardados neste aparelho. Você joga igual com qualquer resposta.${d.faixa === "12a17" ? " Se quiser, decida junto com um adulto responsável." : ""}
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px"><button id="dgSim" class="plain mini"><span>Enviar dados</span></button><button id="dgNao" class="plain mini"><span>Não enviar</span></button></div>
       <div style="margin-top:8px">Dá para mudar em Configurações · ${pol}</div>`;
     ligarPol();
-    b.querySelector("#dgSim").onclick = () => { b.remove(); escolherDiag(true); toast("Obrigado! O envio pode ser desligado em Configurações."); };
-    b.querySelector("#dgNao").onclick = () => { b.remove(); escolherDiag(false); toast("Nada será enviado. Dá para mudar em Configurações."); };
+    b.querySelector("#dgSim").onclick = () => { fechar(); escolherDiag(true); toast("Obrigado! O envio pode ser desligado em Configurações."); };
+    b.querySelector("#dgNao").onclick = () => { fechar(); escolherDiag(false); toast("O diagnóstico está desligado. Dá para mudar em Configurações."); };
     const f = b.querySelector("#dgSim"); if (f) f.focus({ preventScroll: true });
   };
-  if (d.faixa && d.faixa !== "menor12") { perguntarDiag(); return; }
+  if (faixaPermiteDiag(d.faixa)) { perguntarDiag(); return; }
   b.innerHTML = `<b>Uma pergunta rápida: qual é a sua idade?</b> Serve só para saber se o jogo pode perguntar sobre dados de diagnóstico. Fica guardado só neste aparelho.
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:8px"><button data-faixa="menor12" class="plain mini"><span>Menos de 12</span></button><button data-faixa="12a17" class="plain mini"><span>12 a 17</span></button><button data-faixa="18mais" class="plain mini"><span>18 ou mais</span></button></div>
     <div style="margin-top:8px">${pol}</div>`;
   ligarPol();
   b.querySelectorAll("[data-faixa]").forEach(x => x.onclick = () => {
     const x2 = dg(); x2.faixa = x.dataset.faixa; gravarDg();
-    if (x2.faixa === "menor12") { b.remove(); escolherDiag(false); toast("Tudo certo! Para quem tem menos de 12 anos, o jogo não envia dados."); }
+    if (x2.faixa === "menor12") { fechar(); escolherDiag(false); toast("Tudo certo! Para quem tem menos de 12 anos, o jogo não envia dados."); }
     else perguntarDiag();
   });
 }
